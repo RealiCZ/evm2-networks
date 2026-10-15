@@ -20,3 +20,19 @@ evm2.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+
+# base: pinned to the same foundry-rs/base revision Foundry uses so the types unify. Only crates
+# that do not pull revm with this feature selection are allowed here.
+base-common-consensus = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
+base-common-genesis = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
+base-common-l1-fees = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# base: the revm execution path, used as the source of truth by the differential parity tests.
+base-common-chains = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
+base-common-evm = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std", "optional_balance_check", "optional_fee_charge", "optional_no_base_fee"] }
+base-common-precompiles = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
+
+# revm
+revm = { version = "43.0.0", default-features = false, features = ["std"] }
