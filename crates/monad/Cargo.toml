@@ -17,6 +17,15 @@ workspace = true
 
 [dependencies]
 evm2.workspace = true
+evm2-macros.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+
+[dev-dependencies]
+# monad: the revm execution path, used as the source of truth by the differential parity tests.
+monad-revm = { version = "0.8.0", default-features = false, features = ["std", "memory_limit"] }
+
+# revm
+revm = { version = "43.0.0", default-features = false, features = ["std"] }
