@@ -20,3 +20,9 @@ evm2.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Differential parity tests against the op-revm revision pinned by Foundry.
+op-revm = { git = "https://github.com/foundry-rs/optimism", rev = "206d26cedb9d861b983d89fc71e1122187dfa877", default-features = false, features = ["std", "optional_balance_check", "optional_fee_charge"] }
+revm = { version = "43.0.2", default-features = false, features = ["std"] }
