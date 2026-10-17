@@ -103,11 +103,10 @@ fn sorted(addresses: impl IntoIterator<Item = Address>) -> Vec<Address> {
 }
 
 /// Beryl and Cobalt stateful precompiles the reference installs that are not ported yet.
-const NOT_PORTED: [Address; 4] = [
+const NOT_PORTED: [Address; 3] = [
     precompiles::POLICY_REGISTRY_ADDRESS,
     precompiles::B20_FACTORY_ADDRESS,
     precompiles::TX_CONTEXT_ADDRESS,
-    base_common_precompiles::NonceManagerStorage::ADDRESS,
 ];
 
 #[test]
@@ -134,10 +133,11 @@ fn small_inputs_match_revm_reference() {
     inputs.push(modexp);
     for upgrade in ALL {
         let addresses = sorted(BasePrecompiles::new(BaseSpecId::new(upgrade)).addresses());
-        // The stateful activation registry is covered by `activation_parity`.
-        for address in
-            addresses.into_iter().filter(|a| *a != precompiles::ACTIVATION_REGISTRY_ADDRESS)
-        {
+        // Stateful calls are covered by `activation_parity` and `standard_parity`.
+        for address in addresses.into_iter().filter(|a| {
+            ![precompiles::ACTIVATION_REGISTRY_ADDRESS, precompiles::NONCE_MANAGER_ADDRESS]
+                .contains(a)
+        }) {
             for input in &inputs {
                 assert_eq!(
                     run_evm2(upgrade, address, input),
@@ -249,6 +249,7 @@ fn registry_addresses_match_revm_reference() {
     assert_eq!(precompiles::POLICY_REGISTRY_ADDRESS, reference::PolicyRegistryStorage::ADDRESS);
     assert_eq!(precompiles::B20_FACTORY_ADDRESS, reference::B20FactoryStorage::ADDRESS);
     assert_eq!(precompiles::TX_CONTEXT_ADDRESS, reference::TxContextStorage::ADDRESS);
+    assert_eq!(precompiles::NONCE_MANAGER_ADDRESS, reference::NonceManagerStorage::ADDRESS);
 }
 
 #[test]

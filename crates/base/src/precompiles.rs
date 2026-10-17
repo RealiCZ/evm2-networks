@@ -1,6 +1,7 @@
 //! Base precompiles.
 
 use alloy_primitives::{Address, address};
+use base_common_eip8130::NonceManagerSlots;
 use base_common_genesis::BaseUpgrade;
 use evm2::{
     Evm, Precompiles,
@@ -15,6 +16,7 @@ use evm2::{
 use crate::{
     BaseEvmTypes, BaseSpecId,
     activation::{ACTIVATION_REGISTRY_ID, run_activation_registry},
+    nonce::run_nonce_manager,
 };
 
 /// The bn254 pairing precompile address.
@@ -52,6 +54,8 @@ pub const POLICY_REGISTRY_ADDRESS: Address = address!("0x84530000000000000000000
 pub const B20_FACTORY_ADDRESS: Address = address!("0xB20F000000000000000000000000000000000000");
 /// The Cobalt transaction-context precompile address.
 pub const TX_CONTEXT_ADDRESS: Address = address!("0x813000000000000000000000000000000000aa02");
+/// The Cobalt nonce-manager precompile address.
+pub const NONCE_MANAGER_ADDRESS: Address = NonceManagerSlots::ADDRESS;
 
 /// Base Mainnet activation registry admin used by Beryl before Cobalt state-backed admin storage.
 pub const MAINNET_BERYL_ACTIVATION_ADMIN_ADDRESS: Address =
@@ -211,8 +215,9 @@ fn activation_registry_placeholder(
 ///   tightens the caps.
 ///
 /// From Beryl it also installs the activation registry (`0x8453…0001`), driven by the activation
-/// admin configuration. The other Beryl and Cobalt stateful precompiles (B-20 factory and tokens,
-/// policy registry, transaction context, nonce manager) are not ported yet; see the crate README.
+/// admin configuration. Cobalt adds the nonce-manager getter (`0x8130…aa01`). The other Beryl and
+/// Cobalt stateful precompiles (B-20 factory and tokens, policy registry, transaction context)
+/// are not ported yet; see the crate README.
 #[derive(Clone, Debug)]
 pub struct BasePrecompiles {
     precompiles: Precompiles<BaseEvmTypes>,
@@ -285,6 +290,13 @@ impl BasePrecompiles {
                 ACTIVATION_REGISTRY_ADDRESS,
                 PrecompileId::custom(ACTIVATION_REGISTRY_ID),
                 activation_registry_placeholder,
+            ));
+        }
+        if at(BaseUpgrade::Cobalt) {
+            map.insert(Precompile::new(
+                NONCE_MANAGER_ADDRESS,
+                PrecompileId::custom("NonceManager"),
+                run_nonce_manager,
             ));
         }
 

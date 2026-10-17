@@ -16,7 +16,8 @@ This crate ports the single-transaction execution semantics of the revm-based
 - [`deposit`] executes deposits, including failed deposits, which are flagged in
   [`BaseTxResultExt::failed_deposit`].
 - [`BasePrecompiles`] is the Base precompile set with its upgrade activation rules, including the
-  Beryl activation registry driven by the activation admin configuration.
+  Beryl activation registry driven by the activation admin configuration and the Cobalt
+  nonce-manager `getNonce(address,uint256)` getter at `0x813000000000000000000000000000000000aa01`.
 - [`BaseEvmFactory`] builds configured [`BaseEvm`] instances.
 
 The handlers honor evm2's [`EvmFeatures`](evm2::EvmFeatures) like the stock Ethereum handlers.
@@ -24,11 +25,15 @@ With `FEE_CHARGE` disabled, no gas, L1 data fee, or operator fee is charged or r
 
 ## Not ported yet
 
-- The Beryl and Cobalt stateful precompiles other than the activation registry (B-20 factory
-  and tokens, policy registry, transaction context, nonce manager). They are built on
+- The Beryl B-20 factory and tokens and policy registry. They are built on
   `base-precompile-storage`, which is tied to revm.
+- The Cobalt transaction-context precompile. Its ordinary-transaction getters require
+  `tx.origin`, but evm2's precompile interface does not expose the active `TxEnv`. Caching an
+  origin in the transaction handler would not cover raw message execution or system calls.
 - EIP-8130 execution (Zenith only, never scheduled on a real chain). The envelope can carry an
   EIP-8130 transaction, but executing it returns an unsupported-transaction-type error.
+  Nonce mutation and expiring-nonce replay protection belong to that execution layer; the
+  nonce-manager precompile only exposes the read-only getter, as in the reference.
 - Block-level pieces: the block executor and the Canyon, Denim, and Zenith irregular state
   transitions.
 

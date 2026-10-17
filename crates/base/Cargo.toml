@@ -25,6 +25,7 @@ alloy-sol-types.workspace = true
 # base: pinned to the same foundry-rs/base revision Foundry uses so the types unify. Only crates
 # that do not pull revm with this feature selection are allowed here.
 base-common-consensus = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
+base-common-eip8130 = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
 base-common-genesis = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
 base-common-l1-fees = { git = "https://github.com/foundry-rs/base", rev = "2aa8bc46e6b4272ef3bf0905e1a5660ee2525e72", default-features = false, features = ["std"] }
 

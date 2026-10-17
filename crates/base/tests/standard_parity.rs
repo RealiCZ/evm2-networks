@@ -13,9 +13,11 @@ mod common;
 use alloy_consensus::{Signed, TxEip1559, TxLegacy};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_sol_types::{SolCall, SolError};
 use base_common_consensus::{Predeploys, SystemAddresses, TxDeposit};
 use base_common_evm::BaseTransaction;
 use base_common_genesis::BaseUpgrade;
+use base_common_precompiles::{INonceManager, NonceManagerStorage};
 use base_evm2::BaseTxEnvelope;
 use common::{
     CHAIN_ID, COINBASE, Compare, Env, Outcome, Seed, run_evm2, run_evm2_seq, run_revm, run_revm_seq,
@@ -400,6 +402,115 @@ fn empty_payload_does_not_refund_uncharged_operator_fee() {
             } else {
                 assert_eq!(state, reference, "{address} at {upgrade:?}");
             }
+        }
+    }
+}
+
+#[test]
+fn nonce_manager_reads_and_rejections_match() {
+    let address = NonceManagerStorage::ADDRESS;
+    let key = U256::from(9);
+    let calldata = INonceManager::getNonceCall { account: SENDER, nonceKey: key }.abi_encode();
+    let slot = NonceManagerStorage::nonce_slot(SENDER, key).unwrap();
+    let dirty_slot = NonceManagerStorage::nonce_slot(SENDER, U256::MAX).unwrap();
+    let mut fixture = Fixture::legacy();
+    fixture.to = TxKind::Call(address);
+    fixture.value = U256::ZERO;
+    fixture.seeds.push(Seed::eoa(address, U256::ONE).with_storage(vec![
+        (slot, U256::from(37)),
+        (dirty_slot, (U256::ONE << 200) + U256::from(37)),
+    ]));
+    fixture.compare.push((address, vec![slot, dirty_slot]));
+    let mut dirty_address = calldata.clone();
+    dirty_address[4] = 0xff;
+    let cases = [
+        (calldata.clone(), U256::ZERO, true),
+        (
+            INonceManager::getNonceCall { account: TARGET, nonceKey: key }.abi_encode(),
+            U256::ZERO,
+            true,
+        ),
+        (
+            INonceManager::getNonceCall { account: SENDER, nonceKey: U256::MAX }.abi_encode(),
+            U256::ZERO,
+            false,
+        ),
+        (
+            INonceManager::getNonceCall { account: SENDER, nonceKey: U256::ZERO }.abi_encode(),
+            U256::ZERO,
+            false,
+        ),
+        (vec![], U256::ZERO, false),
+        (vec![1, 2, 3], U256::ZERO, false),
+        (vec![0xde, 0xad, 0xbe, 0xef], U256::ZERO, false),
+        (calldata[..4].to_vec(), U256::ZERO, false),
+        (dirty_address, U256::ZERO, false),
+        (calldata.clone(), U256::ONE, false),
+    ];
+    for upgrade in
+        [BaseUpgrade::Beryl, BaseUpgrade::Cobalt, BaseUpgrade::Denim, BaseUpgrade::Zenith]
+    {
+        for (input, value, success) in &cases {
+            fixture.input.clone_from(input);
+            fixture.value = *value;
+            let (evm2, revm) = fixture.outcomes(Env::new(upgrade));
+            assert_eq!(evm2, revm, "{upgrade:?}, input {input:?}, value {value}");
+            let Outcome::Executed { txs, .. } = evm2 else { panic!("transaction rejected") };
+            assert_eq!(txs[0].success, upgrade == BaseUpgrade::Beryl || *success);
+            if upgrade == BaseUpgrade::Beryl {
+                assert!(txs[0].output.is_empty());
+            } else if *success {
+                let expected = if *input == calldata { 37 } else { 0 };
+                assert_eq!(
+                    INonceManager::getNonceCall::abi_decode_returns(&txs[0].output).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn nonce_manager_nested_calls_and_gas_match() {
+    let address = NonceManagerStorage::ADDRESS;
+    let key = U256::from(9);
+    let slot = NonceManagerStorage::nonce_slot(SENDER, key).unwrap();
+    for opcode in [0xf1, 0xfa, 0xf4, 0xf2] {
+        // Two calls in one frame exercise cold/warm reads and the exact gas boundaries.
+        for gas in [2_117u16, 2_118, 2_119] {
+            let mut code = vec![0x36, 0x5f, 0x5f, 0x37]; // Copy calldata.
+            for limit in [gas, 118] {
+                code.extend([0x5f, 0x5f, 0x36, 0x5f]);
+                if matches!(opcode, 0xf1 | 0xf2) {
+                    code.push(0x5f); // Zero value.
+                }
+                code.push(0x73);
+                code.extend_from_slice(address.as_slice());
+                code.push(0x61);
+                code.extend(limit.to_be_bytes());
+                code.extend([opcode, 0x50]); // Discard success flag.
+            }
+            code.extend([0x3d, 0x5f, 0x5f, 0x3e, 0x3d, 0x5f, 0xf3]); // Return last output.
+            let mut fixture = Fixture::legacy().with_contract(code, vec![]);
+            fixture.value = U256::ZERO;
+            fixture.input =
+                INonceManager::getNonceCall { account: SENDER, nonceKey: key }.abi_encode();
+            fixture
+                .seeds
+                .push(Seed::eoa(address, U256::ONE).with_storage(vec![(slot, U256::from(37))]));
+            fixture.compare.push((address, vec![slot]));
+            let (evm2, revm) = fixture.outcomes(Env::new(BaseUpgrade::Cobalt));
+            assert_eq!(evm2, revm, "opcode {opcode:#x}, gas {gas}");
+            let Outcome::Executed { txs, .. } = evm2 else { panic!("transaction rejected") };
+            assert!(txs[0].success);
+            let expected = if matches!(opcode, 0xf4 | 0xf2) {
+                INonceManager::DelegateCallNotAllowed {}.abi_encode()
+            } else if gas >= 2_118 {
+                INonceManager::getNonceCall::abi_encode_returns(&37)
+            } else {
+                vec![]
+            };
+            assert_eq!(txs[0].output.as_ref(), expected);
         }
     }
 }
