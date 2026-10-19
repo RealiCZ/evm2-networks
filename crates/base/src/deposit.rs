@@ -7,7 +7,7 @@ use evm2::{
     EvmFeatures, TxResult,
     env::TxEnvExt,
     ethereum::{
-        execute_initial_frame, finalize_gas, floor_gas, initial_gas_and_reservoir, intrinsic_gas,
+        execute_initial_frame, finalize_gas, initial_gas_and_reservoir, intrinsic_and_floor_gas,
         prepare_initial_frame, warm_base_accounts,
     },
     evm::StateCheckpoint,
@@ -84,8 +84,8 @@ pub fn prepare_deposit(
     }
 
     let version = host.version();
-    let intrinsic = intrinsic_gas(version, tx.from, tx.to, &tx.input, 0, 0, tx.value);
-    let floor_gas = floor_gas(version, tx.from, tx.to, &tx.input, 0, 0, tx.value);
+    let (intrinsic, floor_gas) =
+        intrinsic_and_floor_gas(version, tx.from, tx.to, &tx.input, 0, 0, tx.value);
     if tx.gas_limit < intrinsic || tx.gas_limit < floor_gas {
         return Ok(PreparedDeposit::Failed { checkpoint, nonce });
     }

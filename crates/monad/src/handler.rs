@@ -33,7 +33,7 @@ use evm2::{
     ethereum::{
         LazyAuthorization, LazyTxEip7702, TxEnvelope, access_list_counts, effective_gas_price,
         eip7702::{AuthRefunds, apply_auth_list},
-        execute_initial_frame, finalize_gas, floor_gas, initial_gas_and_reservoir, intrinsic_gas,
+        execute_initial_frame, finalize_gas, initial_gas_and_reservoir, intrinsic_and_floor_gas,
         prepare_initial_frame, validate_block_gas_limit, validate_chain_id,
         validate_create_initcode, validate_execution_gas_limit_cap, validate_floor_gas,
         validate_gas_price, validate_intrinsic_gas, validate_nonce_not_overflow,
@@ -193,7 +193,7 @@ fn prepare(
 
     let (access_list_accounts, access_list_storage_keys) =
         tx.access_list.map(access_list_counts).unwrap_or_default();
-    let mut intrinsic = intrinsic_gas(
+    let (mut intrinsic, floor_gas) = intrinsic_and_floor_gas(
         host.version(),
         caller,
         tx.to,
@@ -207,15 +207,6 @@ fn prepare(
             u64::from(host.version().gas_params.get(GasId::TxEip7702PerEmptyAccountCost));
         intrinsic += (tx.authorization_list.len() as u64).saturating_mul(per_auth);
     }
-    let floor_gas = floor_gas(
-        host.version(),
-        caller,
-        tx.to,
-        tx.input,
-        access_list_accounts,
-        access_list_storage_keys,
-        tx.value,
-    );
     validate_intrinsic_gas(tx.gas_limit, intrinsic, 0)?;
     validate_floor_gas(tx.gas_limit, floor_gas)?;
     validate_execution_gas_limit_cap(host.version(), tx.gas_limit, intrinsic, floor_gas)?;

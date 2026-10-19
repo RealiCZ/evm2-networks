@@ -17,7 +17,7 @@ use evm2::{
     env::TxEnvExt,
     ethereum::{
         LazyTxEip7702, PreparedTx, eip1559, eip2930, eip7702, execute_initial_frame, finalize_gas,
-        floor_gas, initial_gas_and_reservoir, intrinsic_gas, legacy, prepare_initial_frame,
+        initial_gas_and_reservoir, intrinsic_and_floor_gas, legacy, prepare_initial_frame,
         validate_floor_gas, validate_intrinsic_gas, warm_base_accounts,
     },
     handler::{GasSettlement, TxHandlerHooks},
@@ -229,8 +229,8 @@ fn try_prepare_deposit(
 
     // Deposits skip the environment checks (chain id, gas limit caps, initcode size), but not the
     // intrinsic and floor gas checks.
-    let intrinsic = intrinsic_gas(host.version(), tx.from, tx.to, &tx.input, 0, 0, tx.value);
-    let floor_gas = floor_gas(host.version(), tx.from, tx.to, &tx.input, 0, 0, tx.value);
+    let (intrinsic, floor_gas) =
+        intrinsic_and_floor_gas(host.version(), tx.from, tx.to, &tx.input, 0, 0, tx.value);
     validate_intrinsic_gas(tx.gas_limit, intrinsic, 0)?;
     validate_floor_gas(tx.gas_limit, floor_gas)?;
 

@@ -28,7 +28,7 @@ use evm2::{
         Gas, Host, InstrStop, InterpreterState, Message, MessageExt, MessageKind, Result, StackMut,
         Word, derive_create_destination,
     },
-    utils::{word_to_address, word_to_usize, word_to_usize_saturated},
+    utils::WordExt,
     version::GasId,
 };
 use evm2_macros::instruction;
@@ -71,16 +71,16 @@ fn mip3_copy(
     if len == 0 {
         return Ok(());
     }
-    let memory_offset = word_to_usize(memory_offset)?;
+    let memory_offset = memory_offset.to_usize()?;
     monad_resize_memory(gas, state, memory_offset, len)?;
-    state.memory().set_data(memory_offset, word_to_usize_saturated(data_offset), len, data);
+    state.memory().set_data(memory_offset, data_offset.to_usize_saturated(), len, data);
     Ok(())
 }
 
 /// MLOAD with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn mload(cx: _, [offset]: [Word]) -> Result<out> {
-    let offset = word_to_usize(*offset)?;
+    let offset = offset.to_usize()?;
     monad_resize_memory(cx.gas, cx.state, offset, 32)?;
     *out = cx.state.memory().get_word(offset);
 }
@@ -88,7 +88,7 @@ pub fn mload(cx: _, [offset]: [Word]) -> Result<out> {
 /// MSTORE with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn mstore(cx: _, [offset, value]: [Word]) -> Result {
-    let offset = word_to_usize(*offset)?;
+    let offset = offset.to_usize()?;
     monad_resize_memory(cx.gas, cx.state, offset, 32)?;
     cx.state.memory().set(offset, &value.to_be_bytes::<32>());
 }
@@ -96,7 +96,7 @@ pub fn mstore(cx: _, [offset, value]: [Word]) -> Result {
 /// MSTORE8 with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
-    let offset = word_to_usize(*offset)?;
+    let offset = offset.to_usize()?;
     monad_resize_memory(cx.gas, cx.state, offset, 1)?;
     cx.state.memory().set(offset, &[value.byte(0)]);
 }
@@ -104,11 +104,11 @@ pub fn mstore8(cx: _, [offset, value]: [Word]) -> Result {
 /// MCOPY with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = len.to_usize()?;
     cx.gas.spend(cx.state.gas_params().mcopy_cost(len))?;
     if len != 0 {
-        let dst = word_to_usize(*dst)?;
-        let src = word_to_usize(*src)?;
+        let dst = dst.to_usize()?;
+        let src = src.to_usize()?;
         monad_resize_memory(cx.gas, cx.state, dst.max(src), len)?;
         cx.state.memory().copy(dst, src, len);
     };
@@ -117,12 +117,12 @@ pub fn mcopy(cx: _, [dst, src, len]: [Word]) -> Result {
 /// KECCAK256 with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn keccak256_mip3(cx: _, [offset, len]: [Word]) -> Result<out> {
-    let len = word_to_usize(*len)?;
+    let len = len.to_usize()?;
     cx.gas.spend(cx.state.gas_params().keccak256_word_cost(len))?;
     let hash = if len == 0 {
         KECCAK256_EMPTY
     } else {
-        let offset = word_to_usize(*offset)?;
+        let offset = offset.to_usize()?;
         monad_resize_memory(cx.gas, cx.state, offset, len)?;
         keccak256(cx.state.memory().slice(offset, len))
     };
@@ -132,7 +132,7 @@ pub fn keccak256_mip3(cx: _, [offset, len]: [Word]) -> Result<out> {
 /// CALLDATACOPY with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = len.to_usize()?;
     let input = cx.state.message().input.clone();
     mip3_copy(cx.gas, cx.state, *memory_offset, *data_offset, len, &input)
 }
@@ -140,7 +140,7 @@ pub fn calldatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result 
 /// CODECOPY with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = len.to_usize()?;
     let code = cx.state.message().code.clone();
     mip3_copy(cx.gas, cx.state, *memory_offset, *code_offset, len, code.original_byte_slice())
 }
@@ -148,8 +148,8 @@ pub fn codecopy(cx: _, [memory_offset, code_offset, len]: [Word]) -> Result {
 /// RETURNDATACOPY with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Result {
-    let len = word_to_usize(*len)?;
-    let data_offset = word_to_usize_saturated(*data_offset);
+    let len = len.to_usize()?;
+    let data_offset = data_offset.to_usize_saturated();
     if data_offset.saturating_add(len) > cx.state.return_data().len() {
         return Err(InstrStop::OutOfOffset);
     }
@@ -160,12 +160,12 @@ pub fn returndatacopy(cx: _, [memory_offset, data_offset, len]: [Word]) -> Resul
 /// EXTCODECOPY with MIP-3 linear memory cost.
 #[instruction(EvmTypes = MonadEvmTypes, dynamic_gas)]
 pub fn extcodecopy(cx: _, [address, memory_offset, code_offset, len]: [Word]) -> Result {
-    let address = word_to_address(*address);
-    let len = word_to_usize(*len)?;
+    let address = address.to_address();
+    let len = len.to_usize()?;
     cx.gas.spend(cx.state.gas_params().extcodecopy_cost(len))?;
     let mut memory_offset_usize = 0;
     if len != 0 {
-        memory_offset_usize = word_to_usize(*memory_offset)?;
+        memory_offset_usize = memory_offset.to_usize()?;
         monad_resize_memory(cx.gas, cx.state, memory_offset_usize, len)?;
     }
     let cold_load_gas = cx.state.gas_params().cold_account_additional_cost();
@@ -179,7 +179,7 @@ pub fn extcodecopy(cx: _, [address, memory_offset, code_offset, len]: [Word]) ->
         cx.gas.spend(cold_load_gas)?;
     }
     let code = account.code.original_byte_slice();
-    let code_offset = min(word_to_usize_saturated(*code_offset), code.len());
+    let code_offset = min(code_offset.to_usize_saturated(), code.len());
     cx.state.memory().set_data(memory_offset_usize, code_offset, len, code);
 }
 
@@ -188,12 +188,12 @@ pub fn extcodecopy(cx: _, [address, memory_offset, code_offset, len]: [Word]) ->
 pub fn log<const N: usize>(cx: _) -> Result {
     require_non_staticcall(cx.state)?;
     let [offset, len] = stack.popn()?;
-    let len = word_to_usize(len)?;
+    let len = len.to_usize()?;
     cx.gas.spend(cx.state.gas_params().log_cost(N as u8, len))?;
     let data = if len == 0 {
         Bytes::new()
     } else {
-        let offset = word_to_usize(offset)?;
+        let offset = offset.to_usize()?;
         monad_resize_memory(cx.gas, cx.state, offset, len)?;
         Bytes::copy_from_slice(cx.state.memory().slice(offset, len))
     };
@@ -214,9 +214,9 @@ fn return_inner(
     len: &Word,
     result: InstrStop,
 ) -> Result {
-    let len = word_to_usize(*len)?;
+    let len = len.to_usize()?;
     let output = if len != 0 {
-        let offset = word_to_usize(*offset)?;
+        let offset = offset.to_usize()?;
         let Some(end) = offset.checked_add(len) else {
             return Err(InstrStop::MemoryOOG);
         };
@@ -263,9 +263,9 @@ fn resize_memory_range<const MIP3: bool>(
     offset: Word,
     len: Word,
 ) -> Result<Range<usize>> {
-    let len = word_to_usize(len)?;
+    let len = len.to_usize()?;
     let offset = if len != 0 {
-        let offset = word_to_usize(offset)?;
+        let offset = offset.to_usize()?;
         resize::<MIP3>(gas, state, offset, len)?;
         offset
     } else {
@@ -391,7 +391,7 @@ fn call_inner<const MIP3: bool>(
     let [local_gas_limit, to] = stack.popn::<2>()?;
     let value = if has_value { stack.pop()? } else { Word::ZERO };
     let [input_offset, input_len, return_offset, return_len] = stack.popn::<4>()?;
-    let to = word_to_address(to);
+    let to = to.to_address();
     let has_transfer = !value.is_zero();
     if state.is_static() && kind == MessageKind::Call && has_transfer {
         return Err(InstrStop::CallNotAllowedInsideStatic);
@@ -507,7 +507,7 @@ fn create_inner<const MIP3: bool>(
     let [value, offset, len] = stack.popn::<3>()?;
     let salt = if is_create2 { Some(stack.pop()?) } else { None };
 
-    let len = word_to_usize(len)?;
+    let len = len.to_usize()?;
     if state.feature(EvmFeatures::EIP3860) {
         if len > state.version().max_initcode_size {
             return Err(InstrStop::CreateInitCodeSizeLimit);
