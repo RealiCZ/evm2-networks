@@ -21,7 +21,7 @@ use evm2::{
         intrinsic_and_floor_gas, legacy, prepare_initial_frame, validate_block_gas_limit,
         validate_chain_id, validate_create_initcode, validate_execution_gas_limit_cap,
         validate_floor_gas, validate_gas_price, validate_intrinsic_gas,
-        validate_nonce_not_overflow, validate_priority_fee, validate_sender,
+        validate_nonce_not_overflow, validate_priority_fee, validate_sender_and_bump_nonce,
         validate_tx_gas_limit_cap, warm_access_list, warm_base_accounts,
     },
     handler::{GasSettlement, TxHandlerHooks},
@@ -334,10 +334,9 @@ fn prepare_eip2930(
     validate_execution_gas_limit_cap(host.version(), tx.gas_limit, intrinsic, floor_gas)?;
 
     let max_gas_cost = U256::from(tx.gas_limit) * gas_price;
-    validate_sender(host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
-    warm_base_accounts(host, caller, tx.to);
+    validate_sender_and_bump_nonce(host, caller, tx.nonce, max_gas_cost.saturating_add(tx.value))?;
+    warm_base_accounts(host, tx.to);
     warm_access_list(host, &tx.access_list);
-    host.state_mut().account(&caller)?.bump_nonce();
     Hooks::before_execution(host, req.envelope, caller, max_gas_cost)?;
     Ok(PreparedEip2930::Exception(Prepared { caller, gas_price, intrinsic, floor_gas }))
 }
@@ -473,10 +472,9 @@ fn prepare_cip64(
         credit_gas_limit = credit_gas_limit.saturating_sub(debit.total_gas_spent);
     }
 
-    validate_sender(host, caller, tx.nonce, tx.value)?;
-    warm_base_accounts(host, caller, tx.to);
+    validate_sender_and_bump_nonce(host, caller, tx.nonce, tx.value)?;
+    warm_base_accounts(host, tx.to);
     warm_access_list(host, &tx.access_list);
-    host.state_mut().account(&caller)?.bump_nonce();
     Ok(PreparedCip64::FeeCurrency {
         prepared: Prepared { caller, gas_price, intrinsic, floor_gas },
         fee_currency,
