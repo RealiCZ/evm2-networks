@@ -290,6 +290,7 @@ mod tests {
         let message = Message::<PolygonEvmTypes> {
             input: Bytes::copy_from_slice(input),
             code_address,
+            call_target: code_address,
             ..Default::default()
         };
         let mut gas = GasTracker::new(1_000_000);
