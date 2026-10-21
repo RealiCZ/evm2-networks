@@ -226,6 +226,7 @@ mod tests {
         );
         let message = Message::<BscEvmTypes> {
             input: Bytes::copy_from_slice(input),
+            call_target: address,
             code_address: address,
             ..Default::default()
         };
