@@ -91,7 +91,8 @@ pub fn prepare_deposit(
     }
 
     // Pre-warm the sender, destination, coinbase, and precompiles like every transaction.
-    warm_base_accounts(host, tx.from, tx.to);
+    host.state_mut().prewarm(&tx.from);
+    warm_base_accounts(host, tx.to);
 
     Ok(PreparedDeposit::Execute { checkpoint, nonce, intrinsic, floor_gas })
 }

@@ -234,7 +234,8 @@ fn try_prepare_deposit(
     validate_intrinsic_gas(tx.gas_limit, intrinsic, 0)?;
     validate_floor_gas(tx.gas_limit, floor_gas)?;
 
-    warm_base_accounts(host, tx.from, tx.to);
+    host.state_mut().prewarm(&tx.from);
+    warm_base_accounts(host, tx.to);
 
     // No nonce or code checks and no fee charge: mint, then bump the nonce.
     let balance_check = host.feature(EvmFeatures::BALANCE_CHECK);

@@ -219,7 +219,8 @@ fn prepare(
 
     validate_and_charge_sender(host, caller, tx, gas_price)?;
 
-    warm_base_accounts(host, caller, tx.to);
+    host.state_mut().prewarm(&caller);
+    warm_base_accounts(host, tx.to);
     if let Some(access_list) = tx.access_list {
         warm_access_list(host, access_list);
         if MonadHardfork::MonadTen.is_enabled_in(host.config_spec_id()) {
@@ -325,8 +326,9 @@ fn execute_inner(
     let mut frame =
         prepare_initial_frame(host, caller, tx.nonce, tx.to, tx.input, tx.value, &mut tx_gas)?;
     if let Some(frame) = &mut frame {
-        // Monad dispatches precompiles at the delegated address of the top-level call.
-        frame.message.disable_precompiles = false;
+        // Monad dispatches precompiles at the delegated address of the top-level call, while evm2
+        // dispatches at the call target.
+        frame.message.call_target = frame.message.code_address;
     }
 
     let effective_gas_price = u128::try_from(gas_price).unwrap_or(u128::MAX);

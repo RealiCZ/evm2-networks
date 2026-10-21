@@ -423,14 +423,14 @@ fn call_inner<const MIP3: bool>(
         gas_limit,
         reservoir: gas.reservoir(),
         destination,
-        call_target: to,
+        // Monad dispatches precompiles at the delegated address, while evm2 dispatches at the call
+        // target.
+        call_target: code_address,
         caller,
         input,
         value: call_value,
         code,
         code_address,
-        // Monad dispatches precompiles at the delegated address.
-        disable_precompiles: false,
         caller_is_static: state.is_static(),
         salt: B256::ZERO,
         ext: (),
@@ -582,7 +582,6 @@ fn create_inner<const MIP3: bool>(
         input,
         value,
         code_address: caller,
-        disable_precompiles: false,
         caller_is_static: false,
         salt,
         ext: (),
