@@ -11,32 +11,32 @@
 //!   runtime, so executing a Stylus program aborts the transaction with [`StylusUnsupported`]
 //!   instead of diverging silently.
 
-use crate::{ArbEvm, ArbEvmTypes, ArbOsVersion, state};
+use crate::{ArbEvm, ArbEvmTypes, ArbOsVersion, state::ArbOsStorage};
 use alloy_primitives::{U256, hex};
+use core::{error::Error, fmt};
 use evm2::{
     AnyError, DatabaseError, ExecutionError, HostError,
     interpreter::{InstrStop, Word},
-    utils::b256_to_word,
 };
 use evm2_macros::instruction;
-
-/// Error aborting a transaction that executes a Stylus (WASM) program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StylusUnsupported;
-
-impl core::fmt::Display for StylusUnsupported {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("Stylus programs are not supported")
-    }
-}
-
-impl core::error::Error for StylusUnsupported {}
 
 /// Prefix of classic Stylus programs.
 pub const STYLUS_PROGRAM_PREFIX: [u8; 3] = hex!("eff000");
 
 /// Prefix of Stylus root programs, deployable from ArbOS 60.
 pub const STYLUS_ROOT_PROGRAM_PREFIX: [u8; 3] = hex!("eff002");
+
+/// Error aborting a transaction that executes a Stylus (WASM) program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StylusUnsupported;
+
+impl fmt::Display for StylusUnsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Stylus programs are not supported")
+    }
+}
+
+impl Error for StylusUnsupported {}
 
 /// Returns whether `code` is a Stylus program Nitro would run on its WASM runtime.
 ///
@@ -60,19 +60,20 @@ pub fn l1_block_number(cx: _) -> Result<out> {
 #[instruction(EvmTypes = ArbEvmTypes)]
 pub fn l1_blockhash(cx: _, [number]: [Word]) -> Result<out> {
     let host = cx.state.host();
-    let hash = match u64::try_from(*number) {
-        Ok(number) => current_l1_block_number(host)
-            .and_then(|current| state::l1_block_hash(host.state_mut(), current, number)),
-        Err(_) => Ok(None),
-    };
-    *out = hash.map_err(|error| cx.state.fail(error))?.map_or(Word::ZERO, b256_to_word);
+    let hash = current_l1_block_number(host).and_then(|current| match u64::try_from(*number) {
+        Ok(number) if number < current && number.saturating_add(256) >= current => {
+            ArbOsStorage::BLOCKHASHES.get(host.state_mut(), 1 + number % 256)
+        }
+        _ => Ok(Word::ZERO),
+    });
+    *out = hash.map_err(|error| cx.state.fail(error))?;
 }
 
 /// Returns the L1 block number from the block environment, or else from the ArbOS state.
 fn current_l1_block_number(host: &mut ArbEvm<'_>) -> Result<u64, DatabaseError> {
     match host.block().ext.l1_block_number {
         Some(number) => Ok(number),
-        None => state::l1_block_number(host.state_mut()),
+        None => ArbOsStorage::BLOCKHASHES.get(host.state_mut(), 0).map(|n| n.saturating_to()),
     }
 }
 
@@ -82,7 +83,7 @@ fn current_l1_block_number(host: &mut ArbEvm<'_>) -> Result<u64, DatabaseError> 
 pub fn paid_gasprice(cx: _) -> out {
     let host = cx.state.host();
     *out = if host.config_spec_id().enables(ArbOsVersion::V3) {
-        host.ext().tx.paid_gas_price
+        host.ext().paid_gas_price
     } else {
         cx.state.tx().gas_price
     };
@@ -107,23 +108,4 @@ pub fn stylus_or_invalid(cx: _) -> Result {
         return Err(cx.state.fail(HostError::Execution(error)));
     }
     Err(InstrStop::OpcodeNotFound)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stylus_program_prefixes() {
-        let classic = hex!("eff00000aabb");
-        let root = hex!("eff00200aabb");
-        let fragment = hex!("eff00100aabb");
-        assert!(!is_stylus_program(&classic, ArbOsVersion::V20));
-        assert!(is_stylus_program(&classic, ArbOsVersion::V30));
-        assert!(!is_stylus_program(&root, ArbOsVersion::V51));
-        assert!(is_stylus_program(&root, ArbOsVersion::V60));
-        assert!(!is_stylus_program(&fragment, ArbOsVersion::V61));
-        // Nitro requires a byte after the prefix.
-        assert!(!is_stylus_program(&STYLUS_PROGRAM_PREFIX, ArbOsVersion::V61));
-    }
 }

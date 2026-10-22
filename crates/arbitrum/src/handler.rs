@@ -15,12 +15,9 @@
 //! - grow the L2 gas backlog by the compute gas.
 
 use crate::{
-    ArbEvm, ArbEvmTypes, ArbOsVersion, ArbTxContext, ArbTxEnvelope, ArbTxResultExt,
+    ArbEvm, ArbEvmExt, ArbEvmTypes, ArbOsVersion, ArbTxEnvelope, ArbTxResultExt,
     BATCH_POSTER_ADDRESS, L1_PRICER_FUNDS_POOL_ADDRESS,
-    state::{
-        ArbOsStorage, features_storage, l1_pricing, l1_pricing_storage, l2_pricing,
-        l2_pricing_storage, root, vector_element,
-    },
+    state::{ArbOsStorage, l1_pricing, l2_pricing, root},
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{Address, U256};
@@ -37,7 +34,7 @@ use evm2::{
 
 /// Feature flag bit enabling the EIP-7623 calldata floor
 /// (`features.IsIncreasedCalldataPriceEnabled`).
-const INCREASED_CALLDATA_PRICE_FEATURE: u64 = 1;
+const INCREASED_CALLDATA_PRICE_FEATURE_BIT: usize = 0;
 
 /// Handler hooks for signed Ethereum transactions on Arbitrum.
 #[derive(Clone, Copy, Debug, Default)]
@@ -73,7 +70,7 @@ impl TxHandlerHooks<ArbEvmTypes> for ArbHandlerHooks {
 
         let state = host.state_mut();
         if !version.enables(ArbOsVersion::V40)
-            || features_storage().get_u64(state, 0)? & INCREASED_CALLDATA_PRICE_FEATURE == 0
+            || !ArbOsStorage::FEATURES.get(state, 0)?.bit(INCREASED_CALLDATA_PRICE_FEATURE_BIT)
         {
             *floor_gas = 0;
         }
@@ -83,23 +80,17 @@ impl TxHandlerHooks<ArbEvmTypes> for ArbHandlerHooks {
         let poster_fee = poster_price * U256::from(poster_gas);
 
         let gas_cap = if version.enables(ArbOsVersion::V50) {
-            l2_pricing_storage()
-                .get_u64(state, l2_pricing::PER_TX_GAS_LIMIT)?
-                .saturating_sub(*intrinsic)
+            let limit = ArbOsStorage::L2_PRICING.get(state, l2_pricing::PER_TX_GAS_LIMIT)?;
+            limit.saturating_to::<u64>().saturating_sub(*intrinsic)
         } else {
-            l2_pricing_storage().get_u64(state, l2_pricing::PER_BLOCK_GAS_LIMIT)?
+            ArbOsStorage::L2_PRICING.get(state, l2_pricing::PER_BLOCK_GAS_LIMIT)?.saturating_to()
         };
         let charged = intrinsic.saturating_add(poster_gas);
         let held_gas = tx.gas_limit().saturating_sub(charged).saturating_sub(gas_cap);
         *intrinsic = charged.saturating_add(held_gas);
 
-        host.ext_mut().tx = ArbTxContext {
-            sender: Address::ZERO,
-            paid_gas_price,
-            poster_gas,
-            poster_fee,
-            held_gas,
-        };
+        *host.ext_mut() =
+            ArbEvmExt { sender: Address::ZERO, paid_gas_price, poster_gas, poster_fee, held_gas };
         Ok(())
     }
 
@@ -110,9 +101,9 @@ impl TxHandlerHooks<ArbEvmTypes> for ArbHandlerHooks {
         caller: Address,
         _upfront_fee: U256,
     ) -> HandlerResult<()> {
-        host.ext_mut().tx.sender = caller;
+        host.ext_mut().sender = caller;
         let gas_limit = U256::from(envelope.tx.gas_limit());
-        charge_upfront(host, caller, gas_limit * host.ext().tx.paid_gas_price)?;
+        charge_upfront(host, caller, gas_limit * host.ext().paid_gas_price)?;
         Ok(())
     }
 
@@ -122,7 +113,7 @@ impl TxHandlerHooks<ArbEvmTypes> for ArbHandlerHooks {
         _envelope: &ArbTxEnvelope,
         mut gas: GasSettlement<ArbEvmTypes>,
     ) -> HandlerResult<TxResult<ArbEvmTypes>> {
-        let ArbTxContext { paid_gas_price, poster_gas, poster_fee, held_gas, .. } = host.ext().tx;
+        let ArbEvmExt { paid_gas_price, poster_gas, poster_fee, held_gas, .. } = *host.ext();
         let caller = gas.caller;
         let gas_limit = gas.gas_limit;
 
@@ -149,14 +140,15 @@ impl TxHandlerHooks<ArbEvmTypes> for ArbHandlerHooks {
             .add_balance(U256::from(gas_limit.saturating_sub(gas_used)) * paid_gas_price);
 
         let network_fee_account =
-            ArbOsStorage::ROOT.get_address(state, root::NETWORK_FEE_ACCOUNT)?;
+            Address::from_word(ArbOsStorage::ROOT.get(state, root::NETWORK_FEE_ACCOUNT)?.into());
         let tip = U256::from(compute_gas) * paid_gas_price.saturating_sub(basefee);
         let mut compute_cost = U256::from(compute_gas) * basefee;
-        if version.enables(ArbOsVersion::new(5)) {
+        if version.enables(ArbOsVersion::V5) {
             let infra_fee_account =
-                ArbOsStorage::ROOT.get_address(state, root::INFRA_FEE_ACCOUNT)?;
+                Address::from_word(ArbOsStorage::ROOT.get(state, root::INFRA_FEE_ACCOUNT)?.into());
             if !infra_fee_account.is_zero() {
-                let min_base_fee = l2_pricing_storage().get(state, l2_pricing::MIN_BASE_FEE_WEI)?;
+                let min_base_fee =
+                    ArbOsStorage::L2_PRICING.get(state, l2_pricing::MIN_BASE_FEE_WEI)?;
                 let infra_cost = U256::from(compute_gas) * min_base_fee.min(basefee);
                 state.account(&infra_fee_account)?.add_balance(infra_cost);
                 compute_cost -= infra_cost;
@@ -172,9 +164,12 @@ impl TxHandlerHooks<ArbEvmTypes> for ArbHandlerHooks {
         let state = host.state_mut();
         state.account(&poster_fee_destination)?.add_balance(poster_fee);
         if version.enables(ArbOsVersion::V10) {
-            let l1_pricing = l1_pricing_storage();
-            let available = l1_pricing.get(state, l1_pricing::L1_FEES_AVAILABLE)?;
-            l1_pricing.set(state, l1_pricing::L1_FEES_AVAILABLE, available + poster_fee)?;
+            let available = ArbOsStorage::L1_PRICING.get(state, l1_pricing::L1_FEES_AVAILABLE)?;
+            ArbOsStorage::L1_PRICING.set(
+                state,
+                l1_pricing::L1_FEES_AVAILABLE,
+                available + poster_fee,
+            )?;
         }
 
         if !paid_gas_price.is_zero() {
@@ -198,7 +193,7 @@ fn collect_tips(host: &mut ArbEvm<'_>, version: ArbOsVersion) -> Result<bool, Da
     if !version.enables(ArbOsVersion::V60) {
         return Ok(false);
     }
-    Ok(ArbOsStorage::ROOT.get_u64(host.state_mut(), root::COLLECT_TIPS)? != 0)
+    Ok(!ArbOsStorage::ROOT.get(host.state_mut(), root::COLLECT_TIPS)?.is_zero())
 }
 
 /// Grows the L2 gas backlog of the active gas pricing model (`L2PricingState.GrowBacklog`).
@@ -210,28 +205,26 @@ fn grow_backlog(
     version: ArbOsVersion,
     compute_gas: u64,
 ) -> Result<(), DatabaseError> {
-    let l2_pricing = l2_pricing_storage();
-    if version.enables(ArbOsVersion::V60) {
-        let constraints = l2_pricing.open(&[l2_pricing::MULTI_GAS_CONSTRAINTS]);
-        if constraints.get_u64(state, 0)? > 0 {
-            return Ok(());
-        }
+    if version.enables(ArbOsVersion::V60)
+        && !ArbOsStorage::MULTI_GAS_CONSTRAINTS.get(state, 0)?.is_zero()
+    {
+        return Ok(());
     }
-    if version.enables(ArbOsVersion::V50) {
-        let constraints = l2_pricing.open(&[l2_pricing::GAS_CONSTRAINTS]);
-        let len = constraints.get_u64(state, 0)?;
-        if len > 0 {
-            for index in 0..len {
-                let constraint = vector_element(&constraints, index);
-                let backlog = constraint.get_u64(state, l2_pricing::CONSTRAINT_BACKLOG)?;
-                let backlog = U256::from(backlog.saturating_add(compute_gas));
-                constraint.set(state, l2_pricing::CONSTRAINT_BACKLOG, backlog)?;
-            }
-            return Ok(());
-        }
+    let constraints: u64 = if version.enables(ArbOsVersion::V50) {
+        ArbOsStorage::GAS_CONSTRAINTS.get(state, 0)?.saturating_to()
+    } else {
+        0
+    };
+    // The legacy model keeps one backlog; with constraints, each constraint keeps its own.
+    let legacy = (constraints == 0).then_some((ArbOsStorage::L2_PRICING, l2_pricing::GAS_BACKLOG));
+    let constraint_backlogs = (0..constraints).map(|index| {
+        (ArbOsStorage::GAS_CONSTRAINTS.open(&index.to_be_bytes()), l2_pricing::CONSTRAINT_BACKLOG)
+    });
+    for (storage, offset) in legacy.into_iter().chain(constraint_backlogs) {
+        let backlog = storage.get(state, offset)?.saturating_to::<u64>();
+        storage.set(state, offset, U256::from(backlog.saturating_add(compute_gas)))?;
     }
-    let backlog = l2_pricing.get_u64(state, l2_pricing::GAS_BACKLOG)?;
-    l2_pricing.set(state, l2_pricing::GAS_BACKLOG, U256::from(backlog.saturating_add(compute_gas)))
+    Ok(())
 }
 
 /// Returns the transaction registry for an ArbOS version.

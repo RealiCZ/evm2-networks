@@ -50,8 +50,7 @@ pub use chain::*;
 mod config;
 pub use config::{
     ArbBlockEnv, ArbBlockEnvExt, ArbConfig, ArbConfigSelector, ArbEvm, ArbEvmExt, ArbEvmTypes,
-    ArbTxContext, ArbTxResultExt, arbitrum_execution_config, arbitrum_opcode_config,
-    arbitrum_version,
+    ArbTxResultExt, arbitrum_opcode_config, arbitrum_version,
 };
 
 mod factory;

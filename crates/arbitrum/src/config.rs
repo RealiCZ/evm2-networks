@@ -4,8 +4,11 @@ use crate::{ArbOsVersion, ArbTxEnvelope, instructions};
 use alloy_primitives::{Address, U256};
 use evm2::{
     Evm, EvmConfig, EvmConfigSelector, EvmFeatures, EvmTypesHost, ExecutionConfig, OpcodeConfig,
-    SpecId, Version, interpreter::op,
+    SpecId, Version, env::BlockEnv, interpreter::op, spec_to_generic,
 };
+
+/// First byte of Stylus programs, an undefined opcode.
+const STYLUS_EOF_MAGIC: u8 = 0xef;
 
 /// evm2 type family used by Arbitrum execution.
 #[derive(Clone, Copy, Debug)]
@@ -32,7 +35,7 @@ pub type ArbEvm<'a> = Evm<'a, ArbEvmTypes>;
 /// `number` is the L2 block number, which `ArbSys.arbBlockNumber()` returns. The `NUMBER` opcode
 /// returns the L1 block number instead ([`ArbBlockEnvExt::l1_block_number`]). Nitro sets
 /// `prevrandao` to the header difficulty, `1`, and `blob_basefee` to zero.
-pub type ArbBlockEnv = evm2::env::BlockEnv<ArbEvmTypes>;
+pub type ArbBlockEnv = BlockEnv<ArbEvmTypes>;
 
 /// Arbitrum block environment extension.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,18 +51,12 @@ pub struct ArbBlockEnvExt {
     pub l1_block_number: Option<u64>,
 }
 
-/// Arbitrum state owned by an EVM instance: the fee context of the current transaction.
+/// Arbitrum state owned by an EVM instance: the fee context of the current transaction (part of
+/// Nitro's `TxProcessor`).
 ///
 /// The transaction handler resets it before every transaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArbEvmExt {
-    /// Fee context of the current transaction.
-    pub tx: ArbTxContext,
-}
-
-/// Fee context of the current Arbitrum transaction (part of Nitro's `TxProcessor`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ArbTxContext {
     /// Transaction sender, which `ArbSys.myCallersAddressWithoutAliasing()` returns to the
     /// top-level frame.
     pub sender: Address,
@@ -117,9 +114,6 @@ pub const fn arbitrum_opcode_config<const BASE_SPEC_ID: u32>() -> OpcodeConfig<A
     config
 }
 
-/// First byte of Stylus programs, an undefined opcode.
-const STYLUS_EOF_MAGIC: u8 = 0xef;
-
 /// Selects the Arbitrum opcode table for the inherited Ethereum specification of an ArbOS
 /// version.
 #[derive(Clone, Copy, Debug)]
@@ -130,7 +124,7 @@ impl EvmConfigSelector<ArbEvmTypes> for ArbConfigSelector {
 
     fn execution_config(spec_id: ArbOsVersion) -> ExecutionConfig<ArbEvmTypes> {
         let base = spec_id.into_eth_spec();
-        evm2::spec_to_generic!(base, |SPEC_ID| ExecutionConfig::for_config::<ArbConfig<SPEC_ID>>())
+        spec_to_generic!(base, |SPEC_ID| ExecutionConfig::for_config::<ArbConfig<SPEC_ID>>())
             .with_version(arbitrum_version(spec_id, 1))
     }
 }
@@ -152,12 +146,4 @@ pub const fn arbitrum_version(spec: ArbOsVersion, chain_id: u64) -> Version {
     version.tx_gas_limit_cap = u64::MAX;
     version.features.remove(EvmFeatures::PRIORITY_FEE_CHECK);
     version
-}
-
-/// Builds the evm2 execution config for an ArbOS version with dynamic runtime version data.
-pub fn arbitrum_execution_config(
-    spec: ArbOsVersion,
-    version: Version,
-) -> ExecutionConfig<ArbEvmTypes> {
-    ExecutionConfig::for_spec_and_version(spec, version)
 }

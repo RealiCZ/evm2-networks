@@ -1,11 +1,8 @@
 //! Arbitrum transaction envelope and Nitro transaction types.
 
-use alloy_consensus::{
-    EthereumTxEnvelope, Transaction, TxEip1559, TxEip2930, TxEip4844, TxEip7702, TxLegacy,
-};
-use alloy_eips::{eip2718::Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
-use alloy_primitives::{B256, Bytes, ChainId, TxKind, U256};
-use evm2::ethereum::{LazyTxEip7702, TxEnvelope};
+use alloy_consensus::{EthereumTxEnvelope, TxEip4844};
+use alloy_eips::eip2718::Typed2718;
+use evm2::ethereum::TxEnvelope;
 
 /// Nitro `ArbitrumDepositTx` type: an ETH deposit from L1.
 pub const ARBITRUM_DEPOSIT_TX_TYPE: u8 = 0x64;
@@ -55,133 +52,20 @@ pub struct ArbTxEnvelope {
     pub poster_gas: u64,
 }
 
-impl ArbTxEnvelope {
-    /// Creates an envelope without poster gas.
-    pub const fn new(tx: TxEnvelope) -> Self {
-        Self { tx, poster_gas: 0 }
-    }
-
-    /// Sets the L1 poster gas.
-    pub const fn with_poster_gas(mut self, poster_gas: u64) -> Self {
-        self.poster_gas = poster_gas;
-        self
-    }
-}
-
 impl From<TxEnvelope> for ArbTxEnvelope {
     fn from(tx: TxEnvelope) -> Self {
-        Self::new(tx)
+        Self { tx, poster_gas: 0 }
     }
 }
 
 impl From<EthereumTxEnvelope<TxEip4844>> for ArbTxEnvelope {
     fn from(tx: EthereumTxEnvelope<TxEip4844>) -> Self {
-        Self::new(tx.into())
-    }
-}
-
-impl From<TxLegacy> for ArbTxEnvelope {
-    fn from(tx: TxLegacy) -> Self {
-        Self::new(TxEnvelope::Legacy(tx))
-    }
-}
-
-impl From<TxEip2930> for ArbTxEnvelope {
-    fn from(tx: TxEip2930) -> Self {
-        Self::new(TxEnvelope::Eip2930(tx))
-    }
-}
-
-impl From<TxEip1559> for ArbTxEnvelope {
-    fn from(tx: TxEip1559) -> Self {
-        Self::new(TxEnvelope::Eip1559(tx))
-    }
-}
-
-impl From<TxEip7702> for ArbTxEnvelope {
-    fn from(tx: TxEip7702) -> Self {
-        Self::new(tx.into())
-    }
-}
-
-impl From<LazyTxEip7702> for ArbTxEnvelope {
-    fn from(tx: LazyTxEip7702) -> Self {
-        Self::new(tx.into())
+        TxEnvelope::from(tx).into()
     }
 }
 
 impl Typed2718 for ArbTxEnvelope {
     fn ty(&self) -> u8 {
         self.tx.ty()
-    }
-}
-
-impl Transaction for ArbTxEnvelope {
-    fn chain_id(&self) -> Option<ChainId> {
-        self.tx.chain_id()
-    }
-
-    fn nonce(&self) -> u64 {
-        self.tx.nonce()
-    }
-
-    fn gas_limit(&self) -> u64 {
-        self.tx.gas_limit()
-    }
-
-    fn gas_price(&self) -> Option<u128> {
-        self.tx.gas_price()
-    }
-
-    fn max_fee_per_gas(&self) -> u128 {
-        self.tx.max_fee_per_gas()
-    }
-
-    fn max_priority_fee_per_gas(&self) -> Option<u128> {
-        self.tx.max_priority_fee_per_gas()
-    }
-
-    fn max_fee_per_blob_gas(&self) -> Option<u128> {
-        self.tx.max_fee_per_blob_gas()
-    }
-
-    fn priority_fee_or_price(&self) -> u128 {
-        self.tx.priority_fee_or_price()
-    }
-
-    fn effective_gas_price(&self, base_fee: Option<u64>) -> u128 {
-        self.tx.effective_gas_price(base_fee)
-    }
-
-    fn is_dynamic_fee(&self) -> bool {
-        self.tx.is_dynamic_fee()
-    }
-
-    fn kind(&self) -> TxKind {
-        self.tx.kind()
-    }
-
-    fn is_create(&self) -> bool {
-        self.tx.is_create()
-    }
-
-    fn value(&self) -> U256 {
-        self.tx.value()
-    }
-
-    fn input(&self) -> &Bytes {
-        self.tx.input()
-    }
-
-    fn access_list(&self) -> Option<&AccessList> {
-        self.tx.access_list()
-    }
-
-    fn blob_versioned_hashes(&self) -> Option<&[B256]> {
-        self.tx.blob_versioned_hashes()
-    }
-
-    fn authorization_list(&self) -> Option<&[SignedAuthorization]> {
-        self.tx.authorization_list()
     }
 }

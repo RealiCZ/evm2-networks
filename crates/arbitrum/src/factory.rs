@@ -1,8 +1,8 @@
 //! Arbitrum EVM factory.
 
 use crate::{
-    ArbBlockEnv, ArbEvm, ArbEvmExt, ArbEvmTypes, ArbOsVersion, arbitrum_execution_config,
-    arbitrum_precompiles, arbitrum_tx_registry, arbitrum_version,
+    ArbBlockEnv, ArbEvm, ArbEvmExt, ArbEvmTypes, ArbOsVersion, arbitrum_precompiles,
+    arbitrum_tx_registry, arbitrum_version,
 };
 use evm2::{
     Evm, ExecutionConfig, Precompiles, TxResult, Version, evm::DynDatabase, registry::TxRegistry,
@@ -26,7 +26,7 @@ impl ArbEvmFactory {
         spec: ArbOsVersion,
         version: Version,
     ) -> ExecutionConfig<ArbEvmTypes> {
-        arbitrum_execution_config(spec, version)
+        ExecutionConfig::for_spec_and_version(spec, version)
     }
 
     /// Returns the transaction registry for an ArbOS version.

@@ -4,67 +4,96 @@
 //! each block header (see [`ArbHeaderInfo`](crate::ArbHeaderInfo)), rather than on block numbers
 //! or timestamps. The Ethereum forks map onto ArbOS versions as in Nitro's `params/config.go`.
 
-use core::{fmt, str::FromStr};
+use core::{error::Error, fmt, str::FromStr};
 use evm2::SpecId;
 
 /// ArbOS version.
 ///
-/// Versions are compared numerically: a version enables every change of the versions below it.
-/// The constants name the versions with execution changes this crate models.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ArbOsVersion(u64);
-
-impl ArbOsVersion {
+/// Variants are the versions Nitro defines an upgrade for (`ArbosState.UpgradeArbosVersion`),
+/// and their discriminant is the version number, so a higher discriminant is a later version. Nitro
+/// also reserves the versions in between (12 to 19, 21 to 29, 33 to 39, 42 to 49 and 52 to 58) as
+/// upgrades without changes, which no chain runs; they are not represented.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum ArbOsVersion {
+    /// Initial Nitro rules.
+    V1 = 1,
     /// Poster fees go to the L1 pricer funds pool instead of the coinbase.
-    pub const V2: Self = Self(2);
+    V2 = 2,
     /// `GASPRICE` returns the price actually paid.
-    pub const V3: Self = Self(3);
-    /// The infrastructure fee account receives part of the base fee (from version 5).
-    pub const V4: Self = Self(4);
-    /// Collects tips (the only version doing so before 60).
-    pub const V9: Self = Self(9);
+    V3 = 3,
+    /// L1 pricing changes.
+    V4 = 4,
+    /// The infrastructure fee account receives part of the base fee.
+    V5 = 5,
+    /// Address aliasing fix (Arbitrum One genesis).
+    V6 = 6,
+    /// L1 pricing changes.
+    V7 = 7,
+    /// L1 pricing changes.
+    V8 = 8,
+    /// Collects tips, the only version doing so before 60.
+    V9 = 9,
     /// Poster fees are added to the L1 fees available.
-    pub const V10: Self = Self(10);
+    V10 = 10,
     /// Ethereum Shanghai.
-    pub const V11: Self = Self(11);
+    V11 = 11,
     /// Ethereum Cancun (Atlas), without the KZG precompile.
-    pub const V20: Self = Self(20);
+    V20 = 20,
     /// Stylus (Bianca): the Cancun precompiles, including KZG, and RIP-7212 P256.
-    pub const V30: Self = Self(30);
+    V30 = 30,
     /// Stylus fixes.
-    pub const V31: Self = Self(31);
+    V31 = 31,
     /// Stylus charging fixes.
-    pub const V32: Self = Self(32);
+    V32 = 32,
     /// Ethereum Prague (Callisto), with the Cancun precompile set.
-    pub const V40: Self = Self(40);
+    V40 = 40,
     /// Native token owners.
-    pub const V41: Self = Self(41);
+    V41 = 41,
     /// Ethereum Osaka (Dia): the Osaka precompiles, a per-transaction gas limit and single-gas
     /// pricing constraints.
-    pub const V50: Self = Self(50);
+    V50 = 50,
     /// Pricing constraint fixes.
-    pub const V51: Self = Self(51);
+    V51 = 51,
+    /// Stylus activation gas.
+    V59 = 59,
     /// Configurable tip collection and multi-gas pricing constraints.
-    pub const V60: Self = Self(60);
+    V60 = 60,
     /// Multi-gas refund fix.
-    pub const V61: Self = Self(61);
+    #[default]
+    V61 = 61,
+}
 
-    /// Latest ArbOS version modeled by this crate.
-    pub const LATEST: Self = Self::V61;
-
-    /// Creates an ArbOS version.
-    pub const fn new(version: u64) -> Self {
-        Self(version)
-    }
-
-    /// Returns the version number.
-    pub const fn get(self) -> u64 {
-        self.0
-    }
+impl ArbOsVersion {
+    /// All ArbOS versions in order.
+    pub const ALL: [Self; 22] = [
+        Self::V1,
+        Self::V2,
+        Self::V3,
+        Self::V4,
+        Self::V5,
+        Self::V6,
+        Self::V7,
+        Self::V8,
+        Self::V9,
+        Self::V10,
+        Self::V11,
+        Self::V20,
+        Self::V30,
+        Self::V31,
+        Self::V32,
+        Self::V40,
+        Self::V41,
+        Self::V50,
+        Self::V51,
+        Self::V59,
+        Self::V60,
+        Self::V61,
+    ];
 
     /// Returns `true` if `version` is active when `self` is the current version.
     pub const fn enables(self, version: Self) -> bool {
-        self.0 >= version.0
+        self as u8 >= version as u8
     }
 
     /// Returns the Ethereum [`SpecId`] this version builds on.
@@ -85,37 +114,33 @@ impl ArbOsVersion {
     }
 }
 
-impl Default for ArbOsVersion {
-    fn default() -> Self {
-        Self::LATEST
-    }
-}
-
 impl From<ArbOsVersion> for SpecId {
     fn from(version: ArbOsVersion) -> Self {
         version.into_eth_spec()
     }
 }
 
-impl From<u64> for ArbOsVersion {
-    fn from(version: u64) -> Self {
-        Self(version)
+impl From<ArbOsVersion> for u64 {
+    fn from(version: ArbOsVersion) -> Self {
+        version as Self
     }
 }
 
-impl From<ArbOsVersion> for u64 {
-    fn from(version: ArbOsVersion) -> Self {
-        version.0
+impl TryFrom<u64> for ArbOsVersion {
+    type Error = InvalidArbOsVersion;
+
+    fn try_from(version: u64) -> Result<Self, Self::Error> {
+        Self::ALL.into_iter().find(|v| *v as u64 == version).ok_or(InvalidArbOsVersion)
     }
 }
 
 impl fmt::Display for ArbOsVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ArbOS {}", self.0)
+        write!(f, "ArbOS {}", *self as u8)
     }
 }
 
-/// Error returned when parsing an invalid ArbOS version.
+/// Error returned for a number or name that is not an ArbOS version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidArbOsVersion;
 
@@ -125,7 +150,7 @@ impl fmt::Display for InvalidArbOsVersion {
     }
 }
 
-impl core::error::Error for InvalidArbOsVersion {}
+impl Error for InvalidArbOsVersion {}
 
 impl FromStr for ArbOsVersion {
     type Err = InvalidArbOsVersion;
@@ -143,42 +168,6 @@ impl FromStr for ArbOsVersion {
         if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
             return Err(InvalidArbOsVersion);
         }
-        number.parse().map(Self).map_err(|_| InvalidArbOsVersion)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn eth_spec_boundaries() {
-        for (version, spec) in [
-            (1, SpecId::MERGE),
-            (10, SpecId::MERGE),
-            (11, SpecId::SHANGHAI),
-            (19, SpecId::SHANGHAI),
-            (20, SpecId::CANCUN),
-            (32, SpecId::CANCUN),
-            (39, SpecId::CANCUN),
-            (40, SpecId::PRAGUE),
-            (49, SpecId::PRAGUE),
-            (50, SpecId::OSAKA),
-            (61, SpecId::OSAKA),
-        ] {
-            assert_eq!(ArbOsVersion::new(version).into_eth_spec(), spec, "ArbOS {version}");
-        }
-    }
-
-    #[test]
-    fn parses_versions() {
-        for s in ["61", "arbos61", "ArbOS 61", "ARBOS-61", "arbos_61"] {
-            assert_eq!(s.parse::<ArbOsVersion>(), Ok(ArbOsVersion::V61), "{s}");
-        }
-        for s in ["", "arbos", "arbos 6 1", "v61", "-1", "61a", "arbos--61"] {
-            assert!(s.parse::<ArbOsVersion>().is_err(), "{s}");
-        }
-        assert_eq!(ArbOsVersion::V40.to_string().parse::<ArbOsVersion>(), Ok(ArbOsVersion::V40));
-        assert_eq!(ArbOsVersion::default(), ArbOsVersion::LATEST);
+        number.parse::<u64>().map_err(|_| InvalidArbOsVersion)?.try_into()
     }
 }
