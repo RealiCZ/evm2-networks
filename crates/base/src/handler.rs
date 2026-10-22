@@ -67,6 +67,7 @@ impl TxHandlerHooks<BaseEvmTypes> for BaseTxHandlerHooks {
     ) -> HandlerResult<()> {
         Self::load_l1_block_info(host)?;
         let ext = host.ext_mut();
+        ext.tx_origin = caller;
         ext.clear_tx_l1_cost();
         ext.operator_fee_charged = U256::ZERO;
 

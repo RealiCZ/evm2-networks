@@ -7,7 +7,9 @@
 mod common;
 
 use alloy_primitives::{Address, Bytes};
+use alloy_sol_types::{SolCall, SolValue};
 use base_common_genesis::BaseUpgrade;
+use base_common_precompiles::{B20Variant, IB20Factory};
 use base_evm2::{
     BaseEvmFactory, BaseEvmTypes, BasePrecompiles, BaseSpecId, base_version, precompiles,
 };
@@ -15,7 +17,7 @@ use evm2::{
     env::BlockEnv,
     evm::{InMemoryDB, precompile::PrecompileProvider},
     interpreter::{GasTracker, Message},
-    precompiles::PrecompileError,
+    precompiles::{Precompile, PrecompileError, PrecompileId},
 };
 use revm::precompile::PrecompileStatus;
 
@@ -102,13 +104,6 @@ fn sorted(addresses: impl IntoIterator<Item = Address>) -> Vec<Address> {
     addresses
 }
 
-/// Beryl and Cobalt stateful precompiles the reference installs that are not ported yet.
-const NOT_PORTED: [Address; 3] = [
-    precompiles::POLICY_REGISTRY_ADDRESS,
-    precompiles::B20_FACTORY_ADDRESS,
-    precompiles::TX_CONTEXT_ADDRESS,
-];
-
 #[test]
 fn installed_addresses_match_revm_reference() {
     for upgrade in ALL {
@@ -116,7 +111,7 @@ fn installed_addresses_match_revm_reference() {
         let installed =
             base_common_precompiles::BasePrecompiles::<BaseUpgrade>::new_with_spec(upgrade)
                 .install();
-        let revm = sorted(installed.addresses().copied().filter(|a| !NOT_PORTED.contains(a)));
+        let revm = sorted(installed.addresses().copied());
         assert_eq!(evm2, revm, "precompile addresses diverged at {upgrade:?}");
     }
 }
@@ -133,10 +128,16 @@ fn small_inputs_match_revm_reference() {
     inputs.push(modexp);
     for upgrade in ALL {
         let addresses = sorted(BasePrecompiles::new(BaseSpecId::new(upgrade)).addresses());
-        // Stateful calls are covered by `activation_parity` and `standard_parity`.
+        // Stateful calls are covered by `activation_parity`, `b20_parity`, and `standard_parity`.
         for address in addresses.into_iter().filter(|a| {
-            ![precompiles::ACTIVATION_REGISTRY_ADDRESS, precompiles::NONCE_MANAGER_ADDRESS]
-                .contains(a)
+            ![
+                precompiles::ACTIVATION_REGISTRY_ADDRESS,
+                precompiles::NONCE_MANAGER_ADDRESS,
+                precompiles::B20_FACTORY_ADDRESS,
+                precompiles::POLICY_REGISTRY_ADDRESS,
+                precompiles::TX_CONTEXT_ADDRESS,
+            ]
+            .contains(a)
         }) {
             for input in &inputs {
                 assert_eq!(
@@ -293,4 +294,81 @@ fn factory_installs_precompiles_with_activation_admin() {
         assert_eq!(installed.activation_admin_address(), None);
         assert!(installed.contains(&Address::with_last_byte(0x01)));
     }
+}
+
+#[test]
+fn b20_token_lookup_matches_revm_reference() {
+    let creator = Address::repeat_byte(0x11);
+    let salt = alloy_primitives::B256::repeat_byte(0x22);
+    let asset = B20Variant::Asset.compute_address(creator, salt).0;
+    let stablecoin = B20Variant::Stablecoin.compute_address(creator, salt).0;
+    let mut reserved = asset.0.0;
+    reserved[10] = 0x07;
+    let reserved = Address::from(reserved);
+    for upgrade in ALL {
+        let evm2 = BasePrecompiles::new(BaseSpecId::new(upgrade));
+        let revm = base_common_precompiles::BasePrecompiles::<BaseUpgrade>::new_with_spec(upgrade)
+            .install();
+        for address in [asset, stablecoin, reserved, Address::repeat_byte(0x42)] {
+            assert_eq!(
+                evm2.contains(&address),
+                revm.get(&address).is_some(),
+                "{address} lookup diverged at {upgrade:?}"
+            );
+            // Dynamic tokens are never prewarmed.
+            assert!(!evm2.addresses().contains(&address));
+        }
+    }
+}
+
+#[test]
+fn fixed_table_takes_precedence_over_b20_lookup() {
+    fn custom(
+        _evm: &mut evm2::Evm<'_, BaseEvmTypes>,
+        _message: &Message<BaseEvmTypes>,
+        _gas: &mut GasTracker,
+    ) -> evm2::precompiles::PrecompileResult {
+        Ok(evm2::evm::precompile::PrecompileOutput::new(Bytes::from_static(b"custom")))
+    }
+
+    let spec = BaseSpecId::new(BaseUpgrade::Beryl);
+    let token = B20Variant::Asset.compute_address(Address::repeat_byte(0x11), Default::default()).0;
+    let mut evm = BaseEvmFactory::default().create_evm(
+        spec,
+        base_version(spec, common::CHAIN_ID),
+        BlockEnv::<BaseEvmTypes>::default(),
+        InMemoryDB::default(),
+    );
+    let mut precompiles = BasePrecompiles::new(spec);
+    precompiles.precompiles_mut().as_map_mut().insert(Precompile::new(
+        token,
+        PrecompileId::custom("custom"),
+        custom,
+    ));
+    // The factory keeps its behavior when relocated.
+    let relocated = Address::repeat_byte(0x77);
+    precompiles.move_precompiles(&[(precompiles::B20_FACTORY_ADDRESS, relocated)]).unwrap();
+    assert!(!precompiles.contains(&precompiles::B20_FACTORY_ADDRESS));
+
+    fn run(
+        precompiles: &mut BasePrecompiles,
+        evm: &mut evm2::Evm<'_, BaseEvmTypes>,
+        to: Address,
+        input: Vec<u8>,
+    ) -> evm2::precompiles::PrecompileResult {
+        let message = Message::<BaseEvmTypes> {
+            input: input.into(),
+            code_address: to,
+            destination: to,
+            call_target: to,
+            ..Default::default()
+        };
+        precompiles.execute(evm, &message, &mut GasTracker::new(1_000_000)).expect("installed")
+    }
+    let output = run(&mut precompiles, &mut evm, token, vec![]).unwrap();
+    assert_eq!(output.bytes(), b"custom");
+    let output =
+        run(&mut precompiles, &mut evm, relocated, IB20Factory::isB20Call { token }.abi_encode())
+            .unwrap();
+    assert_eq!(output.bytes(), true.abi_encode());
 }

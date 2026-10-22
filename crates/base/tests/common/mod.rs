@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+use alloy_evm::Evm;
+use alloy_primitives::{Address, B256, Bytes, Log, U256, keccak256};
 use base_common_consensus::Predeploys;
 use base_common_evm::{BaseHaltReason, BaseTransaction, Builder, DefaultBase};
 use base_common_genesis::BaseUpgrade;
@@ -19,6 +20,7 @@ use revm::{
     context::{BlockEnv as RevmBlockEnv, CfgEnv, Context, ContextTr, TxEnv},
     context_interface::result::{ExecutionResult, Output},
     database::InMemoryDB as RevmDb,
+    inspector::NoOpInspector,
     state::AccountInfo as RevmAccountInfo,
 };
 
@@ -106,6 +108,8 @@ pub struct AccountState {
     pub nonce: u64,
     pub code_hash: B256,
     pub storage: BTreeMap<U256, U256>,
+    /// Every non-zero storage slot known to the engine's committed database.
+    pub nonzero_storage: BTreeMap<U256, U256>,
 }
 
 /// The engine-independent outcome of one executed transaction.
@@ -116,7 +120,7 @@ pub struct TxOutcome {
     pub failed_deposit: bool,
     pub created: Option<Address>,
     pub output: Bytes,
-    pub logs: usize,
+    pub logs: Vec<Log>,
 }
 
 /// The engine-independent outcome of executing a sequence of transactions.
@@ -224,11 +228,16 @@ pub fn run_revm_seq(
         .with_db(db)
         .with_block(block)
         .with_cfg(cfg)
-        .build_base_with_activation_admin_address(env.activation_admin);
+        .build_base_with_activation_admin_address(env.activation_admin)
+        .with_inspector(NoOpInspector {});
 
     let mut outcomes = Vec::new();
     for tx in txs {
-        let Ok(result) = evm.transact_commit(tx) else { return Outcome::Invalid };
+        // The EIP-8130 executor lives at Alloy's transaction boundary, outside REVM's
+        // single-frame ExecuteEvm handler, which deliberately rejects AA envelopes.
+        let Ok(result) = evm.transact_raw(tx) else { return Outcome::Invalid };
+        evm.commit(result.state);
+        let result = result.result;
         let (created, output) = match &result {
             ExecutionResult::Success { output: Output::Create(bytes, address), .. } => {
                 (*address, bytes.clone())
@@ -246,12 +255,25 @@ pub fn run_revm_seq(
             ),
             created,
             output,
-            logs: result.logs().len(),
+            logs: result.logs().to_vec(),
         });
     }
     let db = evm.ctx_mut().db_mut();
     let mut accounts = BTreeMap::new();
     for (address, slots) in compare {
+        let nonzero_storage = db
+            .cache
+            .accounts
+            .get(address)
+            .map(|account| {
+                account
+                    .storage
+                    .iter()
+                    .filter(|(_, value)| !value.is_zero())
+                    .map(|(slot, value)| (*slot, *value))
+                    .collect()
+            })
+            .unwrap_or_default();
         let info = db.basic(*address).unwrap().unwrap_or_default();
         let storage =
             slots.iter().map(|slot| (*slot, db.storage(*address, *slot).unwrap())).collect();
@@ -262,10 +284,29 @@ pub fn run_revm_seq(
                 nonce: info.nonce,
                 code_hash: norm_code_hash(info.code_hash),
                 storage,
+                nonzero_storage,
             },
         );
     }
     Outcome::Executed { txs: outcomes, accounts }
+}
+
+/// Every non-zero committed storage slot of `address` in evm2: the seeded database overlaid with
+/// the committed transaction state.
+fn evm2_nonzero_storage(evm: &BaseEvm<'static>, address: &Address) -> BTreeMap<U256, U256> {
+    let overlay = evm.overlay_db().cache.storage.get(address);
+    let mut storage = BTreeMap::new();
+    if !overlay.is_some_and(|overlay| overlay.wiped)
+        && let Some(seeded) =
+            evm.database_as::<Evm2Db>().and_then(|db| db.cache.storage.get(address))
+    {
+        storage.extend(seeded.slots.iter().map(|(slot, value)| (*slot, *value)));
+    }
+    if let Some(overlay) = overlay {
+        storage.extend(overlay.slots.iter().map(|(slot, value)| (*slot, *value)));
+    }
+    storage.retain(|_, value| !value.is_zero());
+    storage
 }
 
 /// Executes `tx` on evm2, commits, and reads back `compare`.
@@ -298,12 +339,14 @@ pub fn run_evm2_seq(
             failed_deposit: result.ext.failed_deposit,
             created: result.created_address,
             output: result.output.clone(),
-            logs: result.logs.len(),
+            logs: result.logs.clone(),
         });
     }
+    let dumps: Vec<_> =
+        compare.iter().map(|(address, _)| evm2_nonzero_storage(&evm, address)).collect();
     let state = evm.state_mut();
     let mut accounts = BTreeMap::new();
-    for (address, slots) in compare {
+    for ((address, slots), nonzero_storage) in compare.iter().zip(dumps) {
         let info = state.account_info_untracked(address).unwrap().unwrap_or_default();
         let storage = slots
             .iter()
@@ -316,6 +359,7 @@ pub fn run_evm2_seq(
                 nonce: info.nonce,
                 code_hash: norm_code_hash(info.code_hash),
                 storage,
+                nonzero_storage,
             },
         );
     }

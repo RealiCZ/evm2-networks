@@ -16,7 +16,12 @@ use evm2::{
 use crate::{
     BaseEvmTypes, BaseSpecId,
     activation::{ACTIVATION_REGISTRY_ID, run_activation_registry},
+    beryl::{
+        B20_FACTORY_ID, POLICY_REGISTRY_ID, b20_token_variant, run_b20_factory, run_b20_token,
+        run_policy_registry,
+    },
     nonce::run_nonce_manager,
+    tx_context::run_tx_context,
 };
 
 /// The bn254 pairing precompile address.
@@ -191,15 +196,15 @@ capped_precompile!(
     bls12_381::pairing::run
 );
 
-/// Table entry for the activation registry. [`BasePrecompiles`] dispatches the registry itself,
-/// since it needs the activation admin configuration, so this only runs if the table is used
-/// outside of [`BasePrecompiles`].
-fn activation_registry_placeholder(
+/// Table entry for the Beryl activation registry, B-20 factory, and policy registry.
+/// [`BasePrecompiles`] dispatches these itself, since they need its upgrade and activation admin
+/// configuration, so this only runs if the table is used outside of [`BasePrecompiles`].
+fn base_precompiles_placeholder(
     _evm: &mut Evm<'_, BaseEvmTypes>,
     _message: &Message<BaseEvmTypes>,
     _gas: &mut GasTracker,
 ) -> PrecompileResult {
-    Err(PrecompileError::Fatal("the activation registry must run through BasePrecompiles".into()))
+    Err(PrecompileError::Fatal("Beryl registries must run through BasePrecompiles".into()))
 }
 
 /// The Base precompile set for a spec.
@@ -215,9 +220,12 @@ fn activation_registry_placeholder(
 ///   tightens the caps.
 ///
 /// From Beryl it also installs the activation registry (`0x8453…0001`), driven by the activation
-/// admin configuration. Cobalt adds the nonce-manager getter (`0x8130…aa01`). The other Beryl and
-/// Cobalt stateful precompiles (B-20 factory and tokens, policy registry, transaction context)
-/// are not ported yet; see the crate README.
+/// admin configuration, the policy registry (`0x8453…0002`), and the B-20 factory (`0xB20F…`).
+/// B-20 tokens are resolved dynamically by address prefix, like the reference `BerylLookup`: any
+/// address encoding a supported B-20 variant is a token precompile, without being listed in
+/// [`PrecompileProvider::addresses`] (so it is not prewarmed). Entries of the fixed table,
+/// including custom precompiles and relocations, take precedence over the prefix lookup. Cobalt
+/// adds the nonce-manager getter (`0x8130…aa01`) and transaction-context getters (`0x8130…aa02`).
 #[derive(Clone, Debug)]
 pub struct BasePrecompiles {
     precompiles: Precompiles<BaseEvmTypes>,
@@ -287,9 +295,19 @@ impl BasePrecompiles {
 
         if at(BaseUpgrade::Beryl) {
             map.insert(Precompile::new(
+                B20_FACTORY_ADDRESS,
+                PrecompileId::custom(B20_FACTORY_ID),
+                base_precompiles_placeholder,
+            ));
+            map.insert(Precompile::new(
+                POLICY_REGISTRY_ADDRESS,
+                PrecompileId::custom(POLICY_REGISTRY_ID),
+                base_precompiles_placeholder,
+            ));
+            map.insert(Precompile::new(
                 ACTIVATION_REGISTRY_ADDRESS,
                 PrecompileId::custom(ACTIVATION_REGISTRY_ID),
-                activation_registry_placeholder,
+                base_precompiles_placeholder,
             ));
         }
         if at(BaseUpgrade::Cobalt) {
@@ -297,6 +315,11 @@ impl BasePrecompiles {
                 NONCE_MANAGER_ADDRESS,
                 PrecompileId::custom("NonceManager"),
                 run_nonce_manager,
+            ));
+            map.insert(Precompile::new(
+                TX_CONTEXT_ADDRESS,
+                PrecompileId::custom("TxContext"),
+                run_tx_context,
             ));
         }
 
@@ -357,6 +380,7 @@ impl PrecompileProvider<BaseEvmTypes> for BasePrecompiles {
 
     fn contains(&self, address: &Address) -> bool {
         PrecompileProvider::contains(&self.precompiles, address)
+            || (self.spec.is_enabled_in(BaseUpgrade::Beryl) && b20_token_variant(address).is_some())
     }
 
     fn move_precompiles(
@@ -372,16 +396,22 @@ impl PrecompileProvider<BaseEvmTypes> for BasePrecompiles {
         message: &Message<BaseEvmTypes>,
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
-        let precompile = self.precompiles.as_map().get(&message.code_address)?;
-        if precompile.id().name() == ACTIVATION_REGISTRY_ID {
-            return Some(run_activation_registry(
-                evm,
-                message,
-                gas,
-                self.activation_admin,
-                self.spec.upgrade(),
-            ));
+        let upgrade = self.spec.upgrade();
+        let Some(precompile) = self.precompiles.as_map().get(&message.code_address) else {
+            // Dynamic B-20 token lookup, after the fixed table like the reference `BerylLookup`.
+            if !self.spec.is_enabled_in(BaseUpgrade::Beryl) {
+                return None;
+            }
+            let variant = b20_token_variant(&message.code_address)?;
+            return Some(run_b20_token(evm, message, gas, upgrade, variant));
+        };
+        match precompile.id().name() {
+            ACTIVATION_REGISTRY_ID => {
+                Some(run_activation_registry(evm, message, gas, self.activation_admin, upgrade))
+            }
+            B20_FACTORY_ID => Some(run_b20_factory(evm, message, gas, upgrade)),
+            POLICY_REGISTRY_ID => Some(run_policy_registry(evm, message, gas, upgrade)),
+            _ => self.precompiles.execute(evm, message, gas),
         }
-        self.precompiles.execute(evm, message, gas)
     }
 }

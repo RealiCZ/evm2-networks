@@ -25,6 +25,10 @@ pub use registry::base_tx_registry;
 
 mod activation;
 
+mod beryl;
+
+mod storage;
+
 pub mod precompiles;
 pub use precompiles::{ActivationAdminConfig, BasePrecompiles};
 
@@ -36,3 +40,7 @@ pub use base_common_genesis::BaseUpgrade;
 pub use base_common_l1_fees::L1FeeParams;
 
 mod nonce;
+
+mod eip8130;
+
+mod tx_context;

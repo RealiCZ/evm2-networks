@@ -1,6 +1,6 @@
 //! Base's evm2 execution type family.
 
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use base_common_l1_fees::L1FeeParams;
 use evm2::{
     EvmConfig, EvmConfigSelector, EvmTypesHost, ExecutionConfig, OpcodeConfig, SpecId, Version,
@@ -85,12 +85,15 @@ pub struct BaseEvmExt {
     pub l1_block_info: L1BlockInfo,
     /// Operator fee charged upfront, on the gas limit, for the transaction currently executing.
     pub operator_fee_charged: U256,
+    /// Origin of the transaction currently executing, which Cobalt's transaction-context
+    /// precompile reads for non-EIP-8130 transactions.
+    pub tx_origin: Address,
 }
 
 impl BaseEvmExt {
     /// Creates the extension with preloaded L1 block info.
     pub const fn with_l1_block_info(l1_block_info: L1BlockInfo) -> Self {
-        Self { l1_block_info, operator_fee_charged: U256::ZERO }
+        Self { l1_block_info, operator_fee_charged: U256::ZERO, tx_origin: Address::ZERO }
     }
 
     /// Clears the cached L1 data fee of the current transaction.
@@ -115,6 +118,9 @@ pub struct BaseTxResultExt {
     pub failed_deposit: bool,
     /// For deposits, the sender nonce before the deposit, as recorded in Canyon deposit receipts.
     pub deposit_nonce: Option<u64>,
+    /// EIP-8130 phase outcomes owned by this verified transaction. `None` for other transaction
+    /// types and unsigned simulations, including when the preceding transaction was EIP-8130.
+    pub eip8130_phase_statuses: Option<Vec<u8>>,
 }
 
 /// Returns the evm2 [`Version`] for `spec` on chain `chain_id`.

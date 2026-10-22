@@ -965,6 +965,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
+ "alloy-evm",
  "alloy-primitives",
  "alloy-sol-types",
  "base-common-chains",
@@ -974,7 +975,10 @@ dependencies = [
  "base-common-genesis",
  "base-common-l1-fees",
  "base-common-precompiles",
+ "base-execution-eip8130",
+ "base-precompile-storage",
  "evm2",
+ "k256 0.13.4",
  "revm",
 ]
 

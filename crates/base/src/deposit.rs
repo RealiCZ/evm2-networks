@@ -66,6 +66,7 @@ pub fn prepare_deposit(
     let balance_check = host.feature(EvmFeatures::BALANCE_CHECK);
 
     let nonce = {
+        host.ext_mut().tx_origin = tx.from;
         let mut sender = host.state_mut().account(&tx.from)?;
         let nonce = sender.nonce();
         let mut balance = sender.balance().saturating_add(U256::from(tx.mint));

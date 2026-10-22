@@ -21,10 +21,8 @@ use evm2::ethereum::{LazyTxEip7702, TxEnvelope};
 /// - [`Standard`](Self::Standard): a standard Ethereum transaction (legacy, EIP-2930, EIP-1559,
 ///   EIP-7702), together with its EIP-2718 encoding, which prices the L1 data fee and the operator
 ///   fee.
-/// - [`Eip8130`](Self::Eip8130): an enshrined EIP-8130 account-abstraction transaction (type
-///   `0x79`, Zenith onwards). The envelope can represent it, but no execution handler is
-///   registered yet, so executing one returns
-///   [`HandlerError::UnsupportedTransactionType`](evm2::registry::HandlerError::UnsupportedTransactionType).
+/// - [`Eip8130`](Self::Eip8130): a verified EIP-8130 account-abstraction transaction (type `0x79`,
+///   Zenith onwards). Unsigned RPC execution uses [`Self::Eip8130Simulation`] instead.
 ///
 /// EIP-4844 blob transactions are not supported on Base. A [`TxEnvelope::Eip4844`] wrapped in
 /// [`Standard`](Self::Standard) is rejected as an unsupported transaction type.
@@ -45,6 +43,13 @@ pub enum BaseTxEnvelope {
     },
     /// An enshrined EIP-8130 account-abstraction transaction.
     Eip8130(Eip8130Signed),
+    /// Unsigned RPC simulation, without signature checks, nonce advancement, or fee settlement.
+    Eip8130Simulation {
+        /// Transaction body and representative authentication blobs for intrinsic gas pricing.
+        signed: Eip8130Signed,
+        /// Acting actor, or the sender's self-actor when omitted.
+        sender_actor_id: Option<B256>,
+    },
 }
 
 impl BaseTxEnvelope {
@@ -63,7 +68,7 @@ impl BaseTxEnvelope {
     pub const fn as_deposit(&self) -> Option<&TxDeposit> {
         match self {
             Self::Deposit(tx) => Some(tx),
-            Self::Standard { .. } | Self::Eip8130(_) => None,
+            Self::Standard { .. } | Self::Eip8130(_) | Self::Eip8130Simulation { .. } => None,
         }
     }
 
@@ -76,21 +81,21 @@ impl BaseTxEnvelope {
     pub const fn as_standard(&self) -> Option<&TxEnvelope> {
         match self {
             Self::Standard { tx, .. } => Some(tx),
-            Self::Deposit(_) | Self::Eip8130(_) => None,
+            Self::Deposit(_) | Self::Eip8130(_) | Self::Eip8130Simulation { .. } => None,
         }
     }
 
     /// Returns the EIP-8130 transaction, if this envelope is one.
     pub const fn as_eip8130(&self) -> Option<&Eip8130Signed> {
         match self {
-            Self::Eip8130(tx) => Some(tx),
+            Self::Eip8130(tx) | Self::Eip8130Simulation { signed: tx, .. } => Some(tx),
             Self::Deposit(_) | Self::Standard { .. } => None,
         }
     }
 
     /// Returns whether this envelope is an EIP-8130 transaction.
     pub const fn is_eip8130(&self) -> bool {
-        matches!(self, Self::Eip8130(_))
+        matches!(self, Self::Eip8130(_) | Self::Eip8130Simulation { .. })
     }
 
     /// Returns the bytes the L1 data fee and the operator fee are priced over.
@@ -100,7 +105,7 @@ impl BaseTxEnvelope {
     pub fn enveloped(&self) -> &[u8] {
         match self {
             Self::Standard { enveloped, .. } => enveloped,
-            Self::Deposit(_) | Self::Eip8130(_) => &[],
+            Self::Deposit(_) | Self::Eip8130(_) | Self::Eip8130Simulation { .. } => &[],
         }
     }
 
@@ -116,6 +121,18 @@ impl BaseTxEnvelope {
     /// For deposits the signer is the deposit's `from` address.
     pub const fn with_signer(self, signer: alloy_primitives::Address) -> Recovered<Self> {
         Recovered::new_unchecked(self, signer)
+    }
+
+    /// Marks an EIP-8130 envelope for unsigned RPC simulation. Other transaction types are
+    /// unchanged. The optional actor hint selects the post-account-change policy context.
+    pub fn set_eip8130_simulation(&mut self, sender_actor_id: Option<B256>) {
+        match self {
+            Self::Eip8130(signed) => {
+                *self = Self::Eip8130Simulation { signed: signed.clone(), sender_actor_id };
+            }
+            Self::Eip8130Simulation { sender_actor_id: hint, .. } => *hint = sender_actor_id,
+            _ => {}
+        }
     }
 }
 
@@ -190,7 +207,7 @@ macro_rules! delegate {
         match $self {
             Self::Deposit(tx) => tx.$method($($arg),*),
             Self::Standard { tx, .. } => tx.$method($($arg),*),
-            Self::Eip8130(tx) => tx.$method($($arg),*),
+            Self::Eip8130(tx) | Self::Eip8130Simulation { signed: tx, .. } => tx.$method($($arg),*),
         }
     };
 }
