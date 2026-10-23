@@ -20,6 +20,7 @@ use crate::{
         B20_FACTORY_ID, POLICY_REGISTRY_ID, b20_token_variant, run_b20_factory, run_b20_token,
         run_policy_registry,
     },
+    eip8130::run_root,
     nonce::run_nonce_manager,
     tx_context::run_tx_context,
 };
@@ -57,6 +58,15 @@ pub const ACTIVATION_REGISTRY_ADDRESS: Address =
 pub const POLICY_REGISTRY_ADDRESS: Address = address!("0x8453000000000000000000000000000000000002");
 /// The Beryl B-20 factory precompile address.
 pub const B20_FACTORY_ADDRESS: Address = address!("0xB20F000000000000000000000000000000000000");
+/// Address of the synthetic trace root of inspected EIP-8130 transactions.
+///
+/// Base's reference executor opens one inspector frame around an EIP-8130 transaction's calls.
+/// evm2 only fires call hooks around messages it dispatches, so an inspected transaction
+/// dispatches a root message to this address, which [`BasePrecompiles`] claims from Zenith on and
+/// which runs the calls as child frames. Outside an EIP-8130 root, calls to it succeed with empty
+/// output, like calls to an empty account. The address is neither listed nor prewarmed.
+pub const EIP8130_ROOT_ADDRESS: Address = address!("0x63779fdd96a819d4348ca621f0f539d68347ace2");
+
 /// The Cobalt transaction-context precompile address.
 pub const TX_CONTEXT_ADDRESS: Address = address!("0x813000000000000000000000000000000000aa02");
 /// The Cobalt nonce-manager precompile address.
@@ -381,6 +391,7 @@ impl PrecompileProvider<BaseEvmTypes> for BasePrecompiles {
     fn contains(&self, address: &Address) -> bool {
         PrecompileProvider::contains(&self.precompiles, address)
             || (self.spec.is_enabled_in(BaseUpgrade::Beryl) && b20_token_variant(address).is_some())
+            || (*address == EIP8130_ROOT_ADDRESS && self.spec.is_enabled_in(BaseUpgrade::Zenith))
     }
 
     fn move_precompiles(
@@ -397,6 +408,11 @@ impl PrecompileProvider<BaseEvmTypes> for BasePrecompiles {
         gas: &mut GasTracker,
     ) -> Option<Result<PrecompileOutput, PrecompileError>> {
         let upgrade = self.spec.upgrade();
+        if message.code_address == EIP8130_ROOT_ADDRESS
+            && self.spec.is_enabled_in(BaseUpgrade::Zenith)
+        {
+            return Some(run_root(evm, message, gas));
+        }
         let Some(precompile) = self.precompiles.as_map().get(&message.code_address) else {
             // Dynamic B-20 token lookup, after the fixed table like the reference `BerylLookup`.
             if !self.spec.is_enabled_in(BaseUpgrade::Beryl) {

@@ -88,12 +88,19 @@ pub struct BaseEvmExt {
     /// Origin of the transaction currently executing, which Cobalt's transaction-context
     /// precompile reads for non-EIP-8130 transactions.
     pub tx_origin: Address,
+    /// Hand-off to the synthetic trace root of an inspected EIP-8130 transaction.
+    pub eip8130_root: Option<crate::Eip8130Root>,
 }
 
 impl BaseEvmExt {
     /// Creates the extension with preloaded L1 block info.
     pub const fn with_l1_block_info(l1_block_info: L1BlockInfo) -> Self {
-        Self { l1_block_info, operator_fee_charged: U256::ZERO, tx_origin: Address::ZERO }
+        Self {
+            l1_block_info,
+            operator_fee_charged: U256::ZERO,
+            tx_origin: Address::ZERO,
+            eip8130_root: None,
+        }
     }
 
     /// Clears the cached L1 data fee of the current transaction.

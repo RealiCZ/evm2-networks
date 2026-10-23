@@ -18,16 +18,22 @@ use base_execution_eip8130::{
 use base_precompile_storage::{BasePrecompileError, StorageCtx};
 use evm2::{
     AnyError, EvmFeatures, TxResult,
+    bytecode::Bytecode,
     env::TxEnvExt,
     ethereum::{execute_initial_frame, prepare_initial_frame},
-    evm::StateCheckpoint,
-    interpreter::{GasTracker, InstrStop},
+    evm::{
+        AccountInfo, DbResult, DynDatabase, EmptyDB, StateCheckpoint, precompile::PrecompileOutput,
+    },
+    interpreter::{GasTracker, Host, InstrStop, Message, MessageExt, MessageKind},
+    precompiles::{PrecompileError, PrecompileResult},
     registry::{HandlerError, HandlerResult, TxRequest},
 };
 use std::error::Error;
 
 use crate::{
-    BaseEvm, BaseEvmTypes, BaseTxEnvelope, BaseTxHandlerHooks, BaseTxResultExt,
+    BaseEvm, BaseEvmFactory, BaseEvmTypes, BasePrecompiles, BaseTxEnvelope, BaseTxHandlerHooks,
+    BaseTxResultExt,
+    precompiles::{EIP8130_ROOT_ADDRESS, activation_admin_address_for_upgrade_by_chain_id},
     storage::BaseStorageProvider,
 };
 
@@ -37,7 +43,7 @@ sol! {
 }
 
 /// Resolved transaction context and metered pre-call work.
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedEip8130 {
     checkpoint: StateCheckpoint,
     encoded: Bytes,
@@ -56,13 +62,26 @@ pub(crate) struct PreparedEip8130 {
     prepay: U256,
 }
 
-#[derive(Debug)]
-struct CallsResult {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CallsResult {
     spent: u64,
     refund: i64,
     reverted: bool,
     output: Bytes,
     phases: Vec<u8>,
+}
+
+/// Hand-off between an inspected EIP-8130 transaction and its synthetic trace root, see
+/// [`EIP8130_ROOT_ADDRESS`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Eip8130Root(RootState);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum RootState {
+    /// The calls to run under the root, with their call gas pool.
+    Pending(Box<(Eip8130Signed, PreparedEip8130, u64)>),
+    /// The calls' outcome.
+    Done(Box<CallsResult>),
 }
 
 fn invalid(error: impl std::fmt::Display) -> HandlerError {
@@ -311,9 +330,18 @@ pub(crate) fn execute_eip8130(
     let signed = *req.tx.inner();
     let host = req.host;
     host.ext_mut().tx_origin = prepared.sender;
-    let pool =
-        if prepared.simulated { estimate_pool(host, signed, &prepared)? } else { prepared.pool };
-    let calls = execute_calls(host, signed, &prepared, pool)?;
+    // Inspectors see the transaction's calls under one root frame, and do not see estimation.
+    let inspected = host.inspector().is_some();
+    let pool = match (prepared.simulated, inspected) {
+        (false, _) => prepared.pool,
+        (true, false) => estimate_pool(host, signed, &prepared)?,
+        (true, true) => estimate_pool(&mut uninspected_evm(host), signed, &prepared)?,
+    };
+    let calls = if inspected {
+        execute_root(host, signed, &prepared, pool)?
+    } else {
+        execute_calls(host, signed, &prepared, pool, false)?
+    };
     let gas_used = billable_gas(&prepared, &calls, pool);
     let stop = if calls.reverted { InstrStop::Revert } else { InstrStop::Return };
     let output = calls.output.clone();
@@ -361,6 +389,7 @@ fn execute_calls(
     signed: &Eip8130Signed,
     prepared: &PreparedEip8130,
     pool: u64,
+    under_root: bool,
 ) -> HandlerResult<CallsResult> {
     let mut remaining = pool;
     let mut refund = 0i64;
@@ -388,7 +417,7 @@ fn execute_calls(
             // Keep that access inside the phase checkpoint, not the transaction prewarm set.
             host.state_mut().account(&call.to)?.warm();
             let mut gas = GasTracker::new(remaining);
-            let frame = prepare_initial_frame(
+            let mut frame = prepare_initial_frame(
                 host,
                 prepared.sender,
                 0,
@@ -397,6 +426,10 @@ fn execute_calls(
                 U256::ZERO,
                 &mut gas,
             )?;
+            // Calls under the synthetic root are its children.
+            if under_root && let Some(frame) = &mut frame {
+                frame.message.depth += 1;
+            }
             let result = execute_initial_frame(host, &env, frame, &mut gas, remaining, 0)?;
             remaining = remaining
                 .checked_sub(result.gas.spent())
@@ -439,10 +472,114 @@ fn probe(
     pool: u64,
 ) -> HandlerResult<CallsResult> {
     let checkpoint = host.state().checkpoint();
-    let result = execute_calls(host, signed, prepared, pool);
+    let result = execute_calls(host, signed, prepared, pool, false);
     let features = host.version().features;
     host.state_mut().rollback(checkpoint, features);
     result
+}
+
+/// Runs the calls under a synthetic root message, so that inspectors trace them as its children.
+fn execute_root(
+    host: &mut BaseEvm<'_>,
+    signed: &Eip8130Signed,
+    prepared: &PreparedEip8130,
+    pool: u64,
+) -> HandlerResult<CallsResult> {
+    let env = TxEnvExt {
+        origin: prepared.sender,
+        gas_price: U256::from(prepared.effective),
+        chain_id: U256::from(host.version().chain_id),
+        ..TxEnvExt::default()
+    };
+    let mut root = MessageExt {
+        kind: MessageKind::Call,
+        depth: host.version().initial_call_depth,
+        caller: prepared.sender,
+        destination: EIP8130_ROOT_ADDRESS,
+        call_target: EIP8130_ROOT_ADDRESS,
+        code_address: EIP8130_ROOT_ADDRESS,
+        input: prepared.encoded.clone(),
+        gas_limit: signed.tx().gas_limit,
+        ..MessageExt::default()
+    };
+    let pending = Box::new((signed.clone(), prepared.clone(), pool));
+    host.ext_mut().eip8130_root = Some(Eip8130Root(RootState::Pending(pending)));
+    let result = Host::execute_message(host, &env, &mut root);
+    let root = host.ext_mut().eip8130_root.take();
+    result?;
+    match root {
+        Some(Eip8130Root(RootState::Done(calls))) => Ok(*calls),
+        // An inspector override skipped the root; the calls still execute.
+        _ => execute_calls(host, signed, prepared, pool, false),
+    }
+}
+
+/// Runs the synthetic EIP-8130 root: the calls of the pending transaction, if any.
+pub(crate) fn run_root(
+    evm: &mut BaseEvm<'_>,
+    message: &Message<BaseEvmTypes>,
+    gas: &mut GasTracker,
+) -> PrecompileResult {
+    let Some(Eip8130Root(RootState::Pending(pending))) = evm.ext_mut().eip8130_root.take() else {
+        return Ok(PrecompileOutput::new(Bytes::new()));
+    };
+    let (signed, prepared, pool) = *pending;
+    let calls =
+        execute_calls(evm, &signed, &prepared, pool, true).map_err(|error| match error {
+            HandlerError::Database(error) => PrecompileError::Database(error),
+            HandlerError::Fatal(error) => PrecompileError::Fatal(error),
+            error => PrecompileError::Fatal(AnyError::new(error)),
+        })?;
+    gas.spend(billable_gas(&prepared, &calls, pool).min(message.gas_limit))?;
+    let output = calls.output.clone();
+    // A revert of the root rolls back its frame; earlier phases that committed must survive it.
+    let revert = calls.reverted && calls.phases.iter().all(|status| *status == 0);
+    evm.ext_mut().eip8130_root = Some(Eip8130Root(RootState::Done(Box::new(calls))));
+    if revert { Err(PrecompileError::Revert(output)) } else { Ok(PrecompileOutput::new(output)) }
+}
+
+/// Builds an EVM over `host`'s running state without its inspector, for estimation probes that
+/// inspectors must not see. Base's precompiles stand in for the host's.
+fn uninspected_evm<'h>(host: &'h mut BaseEvm<'_>) -> BaseEvm<'h> {
+    let spec = host.config_spec_id();
+    let version = *host.version();
+    let block = *host.block();
+    let ext = host.ext().clone();
+    let snapshot = host.state().snapshot();
+    let admin = activation_admin_address_for_upgrade_by_chain_id(version.chain_id, spec.upgrade());
+    let factory = BaseEvmFactory::default();
+    let mut evm = BaseEvm::new_with_execution_config_and_ext(
+        factory.execution_config(spec, version),
+        spec,
+        block,
+        factory.tx_registry(spec),
+        EmptyDB::default(),
+        BasePrecompiles::new(spec).with_activation_admin_address(admin),
+        ext,
+    );
+    *evm.state_mut() = snapshot.into_state(HostDb(host.database_mut()));
+    evm
+}
+
+/// Reads through to a host EVM's backing database.
+struct HostDb<'h, 'a>(&'h mut (dyn DynDatabase + 'a));
+
+impl DynDatabase for HostDb<'_, '_> {
+    fn get_account(&mut self, address: &Address) -> DbResult<Option<AccountInfo>> {
+        self.0.get_account(address)
+    }
+
+    fn get_code_by_hash(&mut self, code_hash: &B256) -> DbResult<Bytecode> {
+        self.0.get_code_by_hash(code_hash)
+    }
+
+    fn get_storage(&mut self, address: &Address, key: &U256) -> DbResult<U256> {
+        self.0.get_storage(address, key)
+    }
+
+    fn get_block_hash(&mut self, number: &U256) -> DbResult<B256> {
+        self.0.get_block_hash(number)
+    }
 }
 
 /// Searches only verified-feasible pools, including the gas retained by nested EIP-150 calls.

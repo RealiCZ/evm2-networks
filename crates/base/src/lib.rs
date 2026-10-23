@@ -42,5 +42,6 @@ pub use base_common_l1_fees::L1FeeParams;
 mod nonce;
 
 mod eip8130;
+pub use eip8130::Eip8130Root;
 
 mod tx_context;
