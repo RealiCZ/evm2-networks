@@ -151,8 +151,8 @@ fn balance_check_includes_l1_fee() {
         block(1, 2),
         regolith_l1(),
     );
-    assert_eq!(evm.validate_tx(&tx), Err(HandlerError::InsufficientFunds));
-    assert_eq!(transact(&mut evm, &tx), Err(HandlerError::InsufficientFunds));
+    assert!(matches!(evm.validate_tx(&tx), Err(HandlerError::InsufficientFunds { .. })));
+    assert!(matches!(transact(&mut evm, &tx), Err(HandlerError::InsufficientFunds { .. })));
     assert_eq!(nonce(&mut evm, CALLER), 0);
 
     let mut evm = new_evm(
@@ -179,7 +179,7 @@ fn isthmus_operator_fee_charge_and_refund() {
     let tx = legacy(100_000, 0, TARGET, Some(bytes!("FACADE")));
 
     let mut evm = new_evm(OpSpecId::ISTHMUS, db_with_caller(1_000_049), block(1, 0), l1);
-    assert_eq!(transact(&mut evm, &tx), Err(HandlerError::InsufficientFunds));
+    assert!(matches!(transact(&mut evm, &tx), Err(HandlerError::InsufficientFunds { .. })));
 
     let mut evm = new_evm(OpSpecId::ISTHMUS, db_with_caller(2_000_000), block(1, 0), l1);
     let result = transact(&mut evm, &tx).unwrap();
@@ -201,7 +201,7 @@ fn jovian_operator_fee_charge_and_refund() {
     let tx = legacy(100_000, 0, TARGET, Some(bytes!("FACADE")));
 
     let mut evm = new_evm(OpSpecId::JOVIAN, db_with_caller(20_000_049), block(1, 0), l1);
-    assert_eq!(transact(&mut evm, &tx), Err(HandlerError::InsufficientFunds));
+    assert!(matches!(transact(&mut evm, &tx), Err(HandlerError::InsufficientFunds { .. })));
 
     let mut evm = new_evm(OpSpecId::JOVIAN, db_with_caller(20_000_050), block(1, 0), l1);
     let result = transact(&mut evm, &tx).unwrap();

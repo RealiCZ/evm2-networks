@@ -96,7 +96,7 @@ impl TxHandlerHooks<OpEvmTypes> for OpHandlerHooks {
         let balance = account.balance();
         if balance < required {
             if balance_check {
-                return Err(HandlerError::InsufficientFunds);
+                return Err(HandlerError::InsufficientFunds { fee: required, balance });
             }
             if balance_top_up {
                 account.add_balance(required - balance);

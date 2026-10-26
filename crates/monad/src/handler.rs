@@ -270,7 +270,7 @@ fn validate_and_charge_sender(
     let gas_fee = U256::from(tx.gas_limit).saturating_mul(gas_price);
     let balance = sender.balance();
     if has_balance_check && balance < gas_fee {
-        return Err(HandlerError::InsufficientFunds);
+        return Err(HandlerError::InsufficientFunds { fee: gas_fee, balance });
     }
 
     let mut new_balance = if has_fee_charge { balance.saturating_sub(gas_fee) } else { balance };

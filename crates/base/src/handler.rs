@@ -91,8 +91,9 @@ impl TxHandlerHooks<BaseEvmTypes> for BaseTxHandlerHooks {
         if balance_check {
             // The reference subtracts the L1 and operator fees first, then requires the remainder
             // to cover the maximum gas cost and the value (`LackOfFundForMaxFee`).
-            if balance < additional.saturating_add(max_upfront) {
-                return Err(HandlerError::InsufficientFunds);
+            let fee = additional.saturating_add(max_upfront);
+            if balance < fee {
+                return Err(HandlerError::InsufficientFunds { fee, balance });
             }
         } else if balance_top_up {
             // Extend evm2's balance top-up (see `validate_sender`) to the Base fees, so a sender
